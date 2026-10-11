@@ -31,16 +31,28 @@ pub struct Msg {
 
 impl Msg {
     pub fn system(s: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: Some(s.into()), ..Default::default() }
+        Self {
+            role: "system".into(),
+            content: Some(s.into()),
+            ..Default::default()
+        }
     }
     pub fn user(s: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: Some(s.into()), ..Default::default() }
+        Self {
+            role: "user".into(),
+            content: Some(s.into()),
+            ..Default::default()
+        }
     }
     pub fn assistant(content: Option<String>, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             role: "assistant".into(),
             content,
-            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
             ..Default::default()
         }
     }

@@ -13,11 +13,25 @@ use tokio_util::sync::CancellationToken;
 pub enum AgentEvent {
     Round(usize),
     Token(String),
-    ToolStart { name: String, args: String },
-    ToolEnd { name: String, ms: u64, preview: String, is_err: bool },
+    ToolStart {
+        name: String,
+        args: String,
+    },
+    ToolEnd {
+        name: String,
+        ms: u64,
+        preview: String,
+        is_err: bool,
+    },
     Compacted(String),
-    Usage { input: u64, output: u64, cached: u64 },
-    Done { interrupted: bool },
+    Usage {
+        input: u64,
+        output: u64,
+        cached: u64,
+    },
+    Done {
+        interrupted: bool,
+    },
     Err(String),
 }
 
@@ -100,7 +114,12 @@ pub async fn run(
                         text.push_str(&t);
                         let _ = tx.send(AgentEvent::Token(t)).await;
                     }
-                    api::Ev::TcDelta { idx, id, name, args } => {
+                    api::Ev::TcDelta {
+                        idx,
+                        id,
+                        name,
+                        args,
+                    } => {
                         let b = builders.entry(idx).or_default();
                         if let Some(i) = id {
                             b.id.push_str(&i);
@@ -110,8 +129,18 @@ pub async fn run(
                         }
                         b.args.push_str(&args);
                     }
-                    api::Ev::Usage { input, output, cached } => {
-                        let _ = tx.send(AgentEvent::Usage { input, output, cached }).await;
+                    api::Ev::Usage {
+                        input,
+                        output,
+                        cached,
+                    } => {
+                        let _ = tx
+                            .send(AgentEvent::Usage {
+                                input,
+                                output,
+                                cached,
+                            })
+                            .await;
                     }
                     api::Ev::Finish(f) => finish = f,
                 }
@@ -128,20 +157,37 @@ pub async fn run(
             .into_values()
             .filter(|b| !b.name.is_empty())
             .map(|b| ToolCall {
-                id: if b.id.is_empty() { format!("call_{round}") } else { b.id },
+                id: if b.id.is_empty() {
+                    format!("call_{round}")
+                } else {
+                    b.id
+                },
                 kind: "function".into(),
-                function: FnCall { name: b.name, arguments: b.args },
+                function: FnCall {
+                    name: b.name,
+                    arguments: b.args,
+                },
             })
             .collect();
 
-        let content = if text.is_empty() { None } else { Some(text.clone()) };
+        let content = if text.is_empty() {
+            None
+        } else {
+            Some(text.clone())
+        };
         msgs.push(Msg::assistant(content, calls.clone()));
 
         if calls.is_empty() || cancel.is_cancelled() {
             if finish == "length" {
-                let _ = tx.send(AgentEvent::Err("hit max output tokens".into())).await;
+                let _ = tx
+                    .send(AgentEvent::Err("hit max output tokens".into()))
+                    .await;
             }
-            let _ = tx.send(AgentEvent::Done { interrupted: cancel.is_cancelled() }).await;
+            let _ = tx
+                .send(AgentEvent::Done {
+                    interrupted: cancel.is_cancelled(),
+                })
+                .await;
             return;
         }
 
@@ -160,15 +206,23 @@ pub async fn run(
             // parallel batch: independent read-only calls run concurrently
             let mut set = tokio::task::JoinSet::new();
             for (i, c) in calls.iter().enumerate() {
-                let (name, argstr, root) =
-                    (c.function.name.clone(), c.function.arguments.clone(), root.clone());
+                let (name, argstr, root) = (
+                    c.function.name.clone(),
+                    c.function.arguments.clone(),
+                    root.clone(),
+                );
                 let timeout = cfg.bash_timeout_ms;
                 set.spawn(async move {
                     let t = Instant::now();
-                    let args: Value =
-                        serde_json::from_str(&argstr).unwrap_or_else(|_| Value::Object(Default::default()));
+                    let args: Value = serde_json::from_str(&argstr)
+                        .unwrap_or_else(|_| Value::Object(Default::default()));
                     let res = tools::exec(&name, &args, root, timeout).await;
-                    ExecResult { idx: i, name, res, ms: t.elapsed().as_millis() as u64 }
+                    ExecResult {
+                        idx: i,
+                        name,
+                        res,
+                        ms: t.elapsed().as_millis() as u64,
+                    }
                 });
             }
             while let Some(r) = set.join_next().await {
@@ -228,5 +282,10 @@ pub async fn run(
             msgs.push(Msg::tool(c.id.clone(), content));
         }
     }
-    let _ = tx.send(AgentEvent::Err(format!("hit iteration cap ({})", cfg.max_iters))).await;
+    let _ = tx
+        .send(AgentEvent::Err(format!(
+            "hit iteration cap ({})",
+            cfg.max_iters
+        )))
+        .await;
 }

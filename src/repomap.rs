@@ -3,14 +3,27 @@ use regex::Regex;
 use std::path::{Path, PathBuf};
 
 pub const SKIP_DIRS: &[&str] = &[
-    "node_modules", ".git", "target", "dist", "build", ".next", "vendor",
-    "__pycache__", ".venv", "venv", "coverage", ".cache", "out", "bin", "obj",
+    "node_modules",
+    ".git",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    "vendor",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "coverage",
+    ".cache",
+    "out",
+    "bin",
+    "obj",
 ];
 
 const CODE_EXTS: &[&str] = &[
-    "rs", "py", "js", "jsx", "ts", "tsx", "go", "java", "c", "h", "cpp", "hpp",
-    "cc", "cs", "rb", "php", "swift", "kt", "kts", "scala", "sh", "bash", "lua",
-    "zig", "v", "dart", "ex", "exs", "erl", "hs", "ml", "clj", "r", "m", "mm",
+    "rs", "py", "js", "jsx", "ts", "tsx", "go", "java", "c", "h", "cpp", "hpp", "cc", "cs", "rb",
+    "php", "swift", "kt", "kts", "scala", "sh", "bash", "lua", "zig", "v", "dart", "ex", "exs",
+    "erl", "hs", "ml", "clj", "r", "m", "mm",
 ];
 
 fn symbol_re() -> &'static Regex {

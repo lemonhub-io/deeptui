@@ -10,8 +10,17 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug)]
 pub enum Ev {
     Text(String),
-    TcDelta { idx: usize, id: Option<String>, name: Option<String>, args: String },
-    Usage { input: u64, output: u64, cached: u64 },
+    TcDelta {
+        idx: usize,
+        id: Option<String>,
+        name: Option<String>,
+        args: String,
+    },
+    Usage {
+        input: u64,
+        output: u64,
+        cached: u64,
+    },
     Finish(String),
 }
 
@@ -69,7 +78,10 @@ pub fn parse_chunk(data: &str) -> Vec<Ev> {
         });
     }
     if let Some(err) = v.get("error") {
-        out.push(Ev::Finish(format!("api error: {}", err["message"].as_str().unwrap_or("?"))));
+        out.push(Ev::Finish(format!(
+            "api error: {}",
+            err["message"].as_str().unwrap_or("?")
+        )));
         return out;
     }
     for ch in v["choices"].as_array().into_iter().flatten() {
@@ -85,7 +97,10 @@ pub fn parse_chunk(data: &str) -> Vec<Ev> {
                 idx: tc["index"].as_u64().unwrap_or(0) as usize,
                 id: tc["id"].as_str().map(|s| s.to_string()),
                 name: tc["function"]["name"].as_str().map(|s| s.to_string()),
-                args: tc["function"]["arguments"].as_str().unwrap_or("").to_string(),
+                args: tc["function"]["arguments"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
             });
         }
         if let Some(f) = ch["finish_reason"].as_str() {
@@ -198,7 +213,14 @@ mod tests {
         let evs = parse_chunk(
             r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":64}}}"#,
         );
-        assert!(matches!(evs[0], Ev::Usage { input: 100, output: 10, cached: 64 }));
+        assert!(matches!(
+            evs[0],
+            Ev::Usage {
+                input: 100,
+                output: 10,
+                cached: 64
+            }
+        ));
         assert!(matches!(parse_chunk("[DONE]")[0], Ev::Finish(_)));
     }
 

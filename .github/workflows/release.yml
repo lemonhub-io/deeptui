@@ -1,0 +1,108 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64 (gnu)
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: linux-x86_64 (musl, static)
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - name: linux-aarch64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            linker: aarch64-linux-gnu-gcc
+          - name: macos-x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+          - name: macos-aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: install musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: install cross toolchain (aarch64-linux)
+        if: matrix.linker
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p ~/.cargo
+          printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\n' >> ~/.cargo/config.toml
+      - name: build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: package
+        shell: bash
+        run: |
+          set -e
+          BIN=target/${{ matrix.target }}/release/ragent
+          ART=ragent-${{ github.ref_name }}-${{ matrix.target }}
+          mkdir -p "$ART" artifacts
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            cp "$BIN.exe" "$ART/ragent.exe"
+          else
+            cp "$BIN" "$ART/ragent"
+          fi
+          cp README.md LICENSE "$ART/"
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            7z a -tzip "artifacts/$ART.zip" "$ART" >/dev/null
+          else
+            tar -czf "artifacts/$ART.tar.gz" "$ART"
+          fi
+          ls artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: artifacts/
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: write release notes
+        run: |
+          cat > notes.md <<'EOF'
+          ## ragent v0.1.0
+
+          Lean Rust coding agent — extreme cost & speed optimization.
+
+          - 8/8 tasks in the horizontal eval at ~$0.0011 per successful task (see REPORT.md)
+          - ~5.6 MB binary, ~5 ms startup, ~4 MB RSS
+          - OpenAI-compatible: DeepSeek, OpenAI, OpenRouter, Ollama, vLLM, LM Studio
+          - ratatui TUI + scriptable headless mode
+
+          Binaries: linux (gnu + static musl), linux-aarch64, macOS x86_64/aarch64, Windows x86_64.
+          Verify: `sha256sum -c SHA256SUMS.txt`
+          EOF
+      - name: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create ${{ github.ref_name }} --title "ragent ${{ github.ref_name }}" --notes-file notes.md dist/*

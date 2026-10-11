@@ -28,7 +28,13 @@ struct Price {
 }
 
 const fn p(prefix: &'static str, i: f64, o: f64, c: f64, ds_peak: bool) -> Price {
-    Price { prefix, input: i, output: o, cached: c, ds_peak }
+    Price {
+        prefix,
+        input: i,
+        output: o,
+        cached: c,
+        ds_peak,
+    }
 }
 
 const PRICES: &[Price] = &[
@@ -113,8 +119,7 @@ impl Config {
         }
         let base_url = get(base_url, "RAGENT_BASE_URL", f.base_url, "");
         let base_url = if base_url.is_empty() {
-            std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com/v1".into())
+            std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into())
         } else {
             base_url
         };
@@ -149,7 +154,11 @@ impl Config {
             price_out: po,
             price_cached: pc,
             ds_peak,
-            use_map: if no_map { false } else { f.use_map.unwrap_or(true) },
+            use_map: if no_map {
+                false
+            } else {
+                f.use_map.unwrap_or(true)
+            },
         })
     }
 
@@ -162,11 +171,14 @@ impl Config {
 
     /// Cost of one call. `cached` is the subset of `input` served from cache.
     pub fn cost(&self, input: u64, output: u64, cached: u64) -> f64 {
-        let mult = if self.ds_peak && deepseek_peak_now() { 2.0 } else { 1.0 };
+        let mult = if self.ds_peak && deepseek_peak_now() {
+            2.0
+        } else {
+            1.0
+        };
         let cached = cached.min(input) as f64;
         let miss = input as f64 - cached;
-        (miss * self.price_in + cached * self.price_cached + output as f64 * self.price_out)
-            * mult
+        (miss * self.price_in + cached * self.price_cached + output as f64 * self.price_out) * mult
             / 1e6
     }
 

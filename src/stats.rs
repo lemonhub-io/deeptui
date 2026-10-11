@@ -47,7 +47,11 @@ pub fn load() -> Stats {
 pub fn record(model: &str, input: u64, output: u64, cached: u64, cost: f64, ok: bool) {
     let Some(p) = path() else { return };
     let _ = std::fs::create_dir_all(p.parent().unwrap());
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

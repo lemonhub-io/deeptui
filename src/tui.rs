@@ -259,8 +259,17 @@ fn apply(app: &mut App, ev: AgentEvent, cfg: &Config) {
             ];
             app.push(l);
         }
-        AgentEvent::ToolEnd { ms, preview, is_err, .. } => {
-            let (mark, st) = if is_err { ("✗", C_ERR) } else { ("✓", C_OK) };
+        AgentEvent::ToolEnd {
+            ms,
+            preview,
+            is_err,
+            ..
+        } => {
+            let (mark, st) = if is_err {
+                ("✗", C_ERR)
+            } else {
+                ("✓", C_OK)
+            };
             app.push(vec![
                 ("  └ ".into(), C_DIM),
                 (format!("{mark} {ms}ms"), st),
@@ -271,7 +280,11 @@ fn apply(app: &mut App, ev: AgentEvent, cfg: &Config) {
             app.flush_stream();
             app.note(format!("⛁ {n}"));
         }
-        AgentEvent::Usage { input, output, cached } => {
+        AgentEvent::Usage {
+            input,
+            output,
+            cached,
+        } => {
             app.in_tok += input;
             app.out_tok += output;
             app.cached += cached;
@@ -288,7 +301,12 @@ fn apply(app: &mut App, ev: AgentEvent, cfg: &Config) {
             app.started = None;
             let ok = !interrupted;
             crate::stats::record(
-                &app.model, app.task_in, app.task_out, app.task_cached, app.task_cost, ok,
+                &app.model,
+                app.task_in,
+                app.task_out,
+                app.task_cached,
+                app.task_cost,
+                ok,
             );
             if ok {
                 app.ok_cnt += 1;
@@ -302,7 +320,12 @@ fn apply(app: &mut App, ev: AgentEvent, cfg: &Config) {
             app.running = false;
             app.started = None;
             crate::stats::record(
-                &app.model, app.task_in, app.task_out, app.task_cached, app.task_cost, false,
+                &app.model,
+                app.task_in,
+                app.task_out,
+                app.task_cached,
+                app.task_cost,
+                false,
             );
             app.fail_cnt += 1;
             app.push(sline(format!("✗ {e}"), C_ERR));
@@ -316,7 +339,10 @@ fn input_rows(input: &str, w: usize) -> usize {
     input
         .split('\n')
         .map(|l| {
-            let lw: usize = l.chars().map(|c| UnicodeWidthChar::width(c).unwrap_or(0)).sum();
+            let lw: usize = l
+                .chars()
+                .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+                .sum();
             (lw / w) + 1
         })
         .sum()
@@ -350,7 +376,9 @@ fn render(f: &mut Frame, app: &mut App) {
 
     let iw = area.width.saturating_sub(2) as usize;
     let want_rows = input_rows(&app.input, iw);
-    let input_h = ((want_rows as u16) + 2).clamp(3, 8).min(area.height.saturating_sub(4).max(3));
+    let input_h = ((want_rows as u16) + 2)
+        .clamp(3, 8)
+        .min(area.height.saturating_sub(4).max(3));
     let chunks = Layout::vertical([
         Constraint::Min(3),
         Constraint::Length(input_h),
@@ -376,7 +404,9 @@ fn render(f: &mut Frame, app: &mut App) {
             &app.stream_wrapped[i - app.wrapped.len()]
         };
         visible.push(Line::from(
-            src.iter().map(|(s, st)| Span::styled(s.as_str(), *st)).collect::<Vec<Span>>(),
+            src.iter()
+                .map(|(s, st)| Span::styled(s.as_str(), *st))
+                .collect::<Vec<Span>>(),
         ));
     }
     f.render_widget(Paragraph::new(Text::from(visible)), chat);
@@ -397,7 +427,12 @@ fn render(f: &mut Frame, app: &mut App) {
     let border = if app.running { C_DIM } else { C_USER };
     f.render_widget(
         Paragraph::new(app.input.as_str())
-            .block(Block::default().borders(Borders::ALL).title(title).border_style(border))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(border),
+            )
             .wrap(Wrap { trim: false })
             .scroll((app.input_scroll, 0)),
         input_a,
@@ -408,12 +443,23 @@ fn render(f: &mut Frame, app: &mut App) {
     ));
 
     // status bar
-    let elapsed = app.started.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
-    let state = if app.running { format!("running step {} · {:.0}s", app.iter, elapsed) } else { "idle".into() };
+    let elapsed = app
+        .started
+        .map(|t| t.elapsed().as_secs_f32())
+        .unwrap_or(0.0);
+    let state = if app.running {
+        format!("running step {} · {:.0}s", app.iter, elapsed)
+    } else {
+        "idle".into()
+    };
     let mut left = format!(
         " {} · {} · ↑{} ↓{} ⛁{} · task ${:.4}",
-        env!("CARGO_PKG_NAME"), state, fmt_tokens(app.in_tok), fmt_tokens(app.out_tok),
-        fmt_tokens(app.cached), app.task_cost
+        env!("CARGO_PKG_NAME"),
+        state,
+        fmt_tokens(app.in_tok),
+        fmt_tokens(app.out_tok),
+        fmt_tokens(app.cached),
+        app.task_cost
     );
     if app.ok_cnt + app.fail_cnt > 0 {
         left.push_str(&format!(
@@ -421,7 +467,11 @@ fn render(f: &mut Frame, app: &mut App) {
             app.cost,
             app.ok_cnt,
             app.fail_cnt,
-            if app.ok_cnt > 0 { app.cost / app.ok_cnt as f64 } else { 0.0 }
+            if app.ok_cnt > 0 {
+                app.cost / app.ok_cnt as f64
+            } else {
+                0.0
+            }
         ));
     }
     left.push_str(&format!(" · {}", app.model));
@@ -429,7 +479,9 @@ fn render(f: &mut Frame, app: &mut App) {
     st.push((" ".into(), Style::new().bg(Color::White)));
     f.render_widget(
         Paragraph::new(Line::from(
-            st.iter().map(|(s, x)| Span::styled(s.as_str(), *x)).collect::<Vec<Span>>(),
+            st.iter()
+                .map(|(s, x)| Span::styled(s.as_str(), *x))
+                .collect::<Vec<Span>>(),
         ))
         .style(Style::new().bg(Color::White)),
         status,
@@ -568,7 +620,11 @@ fn on_key(app: &mut App, k: KeyEvent, cmd: &mpsc::Sender<UserCmd>) -> bool {
         KeyCode::Down => {
             if app.hi < app.hist.len() {
                 app.hi += 1;
-                app.input = if app.hi == app.hist.len() { app.draft.clone() } else { app.hist[app.hi].clone() };
+                app.input = if app.hi == app.hist.len() {
+                    app.draft.clone()
+                } else {
+                    app.hist[app.hi].clone()
+                };
                 app.cur = app.input.len();
             }
         }
@@ -586,7 +642,12 @@ fn on_key(app: &mut App, k: KeyEvent, cmd: &mpsc::Sender<UserCmd>) -> bool {
 pub async fn run(cfg: Config) -> Result<()> {
     let mut stdout = io::stdout();
     enable_raw_mode()?;
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
     let _ = execute!(
         stdout,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
@@ -632,7 +693,9 @@ async fn run_ui(term: &mut Terminal<CrosstermBackend<io::Stdout>>, cfg: Config) 
         cfg.context_budget / 1000
     ));
     if cfg.price_in == 0.0 {
-        app.note("unknown model pricing — cost shown as $0; set price_input/price_output in config.toml");
+        app.note(
+            "unknown model pricing — cost shown as $0; set price_input/price_output in config.toml",
+        );
     }
     let life = crate::stats::load();
     if life.tasks > 0 {

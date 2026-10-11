@@ -4,8 +4,8 @@ use serde_json::{json, Value};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-const LINE_CAP: usize = 400;       // max chars of a single source line returned
-const READ_MAX: usize = 2000;      // hard cap on lines per read
+const LINE_CAP: usize = 400; // max chars of a single source line returned
+const READ_MAX: usize = 2000; // hard cap on lines per read
 const READ_BYTES: usize = 96 * 1024;
 const BASH_LINES: usize = 250;
 const GREP_MAX: usize = 200;
@@ -110,7 +110,9 @@ fn resolve(root: &Path, p: &str) -> Result<PathBuf, String> {
 }
 
 fn rel(root: &Path, p: &Path) -> String {
-    p.strip_prefix(root).map(|r| r.display().to_string()).unwrap_or_else(|_| p.display().to_string())
+    p.strip_prefix(root)
+        .map(|r| r.display().to_string())
+        .unwrap_or_else(|_| p.display().to_string())
 }
 
 fn read_file_sync(root: &Path, args: &Value) -> Result<String, String> {
@@ -127,20 +129,31 @@ fn read_file_sync(root: &Path, args: &Value) -> Result<String, String> {
     let total = text.lines().count();
     for (i, line) in text.lines().enumerate().skip(offset - 1) {
         if shown >= limit || out.len() > READ_BYTES {
-            out.push_str(&format!("… stopped at line {} of {total} (use offset/limit)\n", i + 1));
+            out.push_str(&format!(
+                "… stopped at line {} of {total} (use offset/limit)\n",
+                i + 1
+            ));
             break;
         }
         let mut l = line;
         let mut note = "";
         if l.chars().count() > LINE_CAP {
-            l = &line[..line.char_indices().nth(LINE_CAP).map(|(i, _)| i).unwrap_or(line.len())];
+            l = &line[..line
+                .char_indices()
+                .nth(LINE_CAP)
+                .map(|(i, _)| i)
+                .unwrap_or(line.len())];
             note = " …";
         }
         out.push_str(&format!("{:>4}│{}{}\n", i + 1, l, note));
         shown += 1;
     }
     if shown == 0 {
-        if total == 0 { Ok("(empty file)".into()) } else { Err(format!("offset {offset} beyond {total} lines")) }
+        if total == 0 {
+            Ok("(empty file)".into())
+        } else {
+            Err(format!("offset {offset} beyond {total} lines"))
+        }
     } else {
         Ok(out)
     }
@@ -155,8 +168,12 @@ fn edit_file_sync(root: &Path, args: &Value) -> Result<String, String> {
     }
     let (mut plus, mut minus) = (0usize, 0usize);
     for (i, e) in edits.iter().enumerate() {
-        let old = e["old"].as_str().ok_or_else(|| format!("edit {i}: missing old"))?;
-        let new = e["new"].as_str().ok_or_else(|| format!("edit {i}: missing new"))?;
+        let old = e["old"]
+            .as_str()
+            .ok_or_else(|| format!("edit {i}: missing old"))?;
+        let new = e["new"]
+            .as_str()
+            .ok_or_else(|| format!("edit {i}: missing new"))?;
         if old.is_empty() {
             return Err(format!("edit {i}: empty old"));
         }
@@ -165,14 +182,20 @@ fn edit_file_sync(root: &Path, args: &Value) -> Result<String, String> {
             return Err(format!("edit {i}: `old` not found in {}", rel(root, &p)));
         }
         if count > 1 {
-            return Err(format!("edit {i}: `old` matches {count} times — add more context"));
+            return Err(format!(
+                "edit {i}: `old` matches {count} times — add more context"
+            ));
         }
         minus += old.lines().count();
         plus += new.lines().count();
         text = text.replacen(old, new, 1);
     }
     std::fs::write(&p, &text).map_err(|e| format!("{}: {e}", rel(root, &p)))?;
-    Ok(format!("applied {} edits to {} (+{plus}/-{minus} lines)", edits.len(), rel(root, &p)))
+    Ok(format!(
+        "applied {} edits to {} (+{plus}/-{minus} lines)",
+        edits.len(),
+        rel(root, &p)
+    ))
 }
 
 fn write_file_sync(root: &Path, args: &Value) -> Result<String, String> {
@@ -191,14 +214,20 @@ fn cap_lines(s: &str, head: usize, tail: usize) -> String {
         return s.to_string();
     }
     let mut out = lines[..head].join("\n");
-    out.push_str(&format!("\n… [{} lines elided] …\n", lines.len() - head - tail));
+    out.push_str(&format!(
+        "\n… [{} lines elided] …\n",
+        lines.len() - head - tail
+    ));
     out.push_str(&lines[lines.len() - tail..].join("\n"));
     out
 }
 
 async fn bash_run(root: &Path, args: &Value, default_timeout_ms: u64) -> Result<String, String> {
     let cmd = args["cmd"].as_str().ok_or("missing cmd")?;
-    let timeout = args["timeout_ms"].as_u64().unwrap_or(default_timeout_ms).min(300_000);
+    let timeout = args["timeout_ms"]
+        .as_u64()
+        .unwrap_or(default_timeout_ms)
+        .min(300_000);
     let fut = tokio::process::Command::new("bash")
         .arg("-c")
         .arg(cmd)
@@ -250,7 +279,10 @@ fn grep_sync(root: &Path, args: &Value) -> Result<String, String> {
     'outer: for e in WalkBuilder::new(&dir)
         .hidden(false)
         .git_ignore(true)
-        .filter_entry(|e| e.depth() == 0 || !repomap::SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref()))
+        .filter_entry(|e| {
+            e.depth() == 0
+                || !repomap::SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref())
+        })
         .build()
         .flatten()
     {
@@ -312,7 +344,10 @@ fn glob_sync(root: &Path, args: &Value) -> Result<String, String> {
     for e in WalkBuilder::new(&dir)
         .hidden(false)
         .git_ignore(true)
-        .filter_entry(|e| e.depth() == 0 || !repomap::SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref()))
+        .filter_entry(|e| {
+            e.depth() == 0
+                || !repomap::SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref())
+        })
         .build()
         .flatten()
     {
@@ -329,7 +364,11 @@ fn glob_sync(root: &Path, args: &Value) -> Result<String, String> {
             }
         }
     }
-    if n == 0 { Err("no matches".into()) } else { Ok(out) }
+    if n == 0 {
+        Err("no matches".into())
+    } else {
+        Ok(out)
+    }
 }
 
 fn ls_sync(root: &Path, args: &Value) -> Result<String, String> {
@@ -367,7 +406,12 @@ fn ls_sync(root: &Path, args: &Value) -> Result<String, String> {
 }
 
 /// Execute a tool. Ok/Err both become tool-result content for the model.
-pub async fn exec(name: &str, args: &Value, root: Arc<PathBuf>, bash_timeout_ms: u64) -> Result<String, String> {
+pub async fn exec(
+    name: &str,
+    args: &Value,
+    root: Arc<PathBuf>,
+    bash_timeout_ms: u64,
+) -> Result<String, String> {
     let rt = (*root).clone();
     match name {
         "bash" => bash_run(&rt, args, bash_timeout_ms).await,
@@ -385,7 +429,11 @@ pub async fn exec(name: &str, args: &Value, root: Arc<PathBuf>, bash_timeout_ms:
                     "ls" => ls_sync(r, &args),
                     "repomap" => {
                         let m = repomap::build(r, 6000);
-                        if m.is_empty() { Err("empty project".into()) } else { Ok(m) }
+                        if m.is_empty() {
+                            Err("empty project".into())
+                        } else {
+                            Ok(m)
+                        }
                     }
                     _ => unreachable!(),
                 }

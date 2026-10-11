@@ -72,7 +72,10 @@ pub fn compact(msgs: &mut Vec<Msg>, budget: usize) -> Option<String> {
     let before = keep.len();
     keep.retain(|m| {
         m.role != "tool"
-            || m.tool_call_id.as_deref().map(|id| ids.contains(id)).unwrap_or(false)
+            || m.tool_call_id
+                .as_deref()
+                .map(|id| ids.contains(id))
+                .unwrap_or(false)
     });
     let orphans = before - keep.len();
     *msgs = keep;
@@ -90,7 +93,10 @@ mod tests {
         ToolCall {
             id: id.into(),
             kind: "function".into(),
-            function: FnCall { name: "bash".into(), arguments: "{}".into() },
+            function: FnCall {
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
         }
     }
 

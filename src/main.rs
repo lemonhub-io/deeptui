@@ -76,7 +76,11 @@ async fn main() -> Result<()> {
         Some(s.trim_end().to_string()).filter(|s| !s.is_empty())
     };
     if let Some(p) = piped {
-        prompt = if prompt.is_empty() { p } else { format!("{prompt}\n\n{p}") };
+        prompt = if prompt.is_empty() {
+            p
+        } else {
+            format!("{prompt}\n\n{p}")
+        };
     }
 
     if cli.print || !prompt.is_empty() {
@@ -123,37 +127,44 @@ async fn headless(cfg: Config, prompt: String) -> Result<()> {
     let mut out = std::io::stdout();
     let mut code = 0;
     let mut interrupted = false;
-    let mut handle = |ev: AgentEvent| {
-        match ev {
-            AgentEvent::Token(t) => {
-                out.write_all(t.as_bytes()).ok();
-                out.flush().ok();
-            }
-            AgentEvent::ToolStart { name, args } => {
-                eprintln!("\x1b[2m▸ {name} {args}\x1b[0m");
-            }
-            AgentEvent::ToolEnd { name, ms, preview, is_err } => {
-                let m = if is_err { "✗" } else { "✓" };
-                eprintln!("\x1b[2m  └ {m} {ms}ms {name} · {preview}\x1b[0m");
-            }
-            AgentEvent::Compacted(n) => eprintln!("\x1b[2m⛁ {n}\x1b[0m"),
-            AgentEvent::Usage { input, output, cached: c } => {
-                intok += input;
-                outtok += output;
-                cached += c;
-            }
-            AgentEvent::Done { interrupted: i } => {
-                interrupted = i;
-                if i {
-                    eprintln!("\x1b[2m— interrupted\x1b[0m");
-                }
-            }
-            AgentEvent::Err(e) => {
-                eprintln!("\x1b[31m✗ {e}\x1b[0m");
-                code = 1;
-            }
-            AgentEvent::Round(_) => {}
+    let mut handle = |ev: AgentEvent| match ev {
+        AgentEvent::Token(t) => {
+            out.write_all(t.as_bytes()).ok();
+            out.flush().ok();
         }
+        AgentEvent::ToolStart { name, args } => {
+            eprintln!("\x1b[2m▸ {name} {args}\x1b[0m");
+        }
+        AgentEvent::ToolEnd {
+            name,
+            ms,
+            preview,
+            is_err,
+        } => {
+            let m = if is_err { "✗" } else { "✓" };
+            eprintln!("\x1b[2m  └ {m} {ms}ms {name} · {preview}\x1b[0m");
+        }
+        AgentEvent::Compacted(n) => eprintln!("\x1b[2m⛁ {n}\x1b[0m"),
+        AgentEvent::Usage {
+            input,
+            output,
+            cached: c,
+        } => {
+            intok += input;
+            outtok += output;
+            cached += c;
+        }
+        AgentEvent::Done { interrupted: i } => {
+            interrupted = i;
+            if i {
+                eprintln!("\x1b[2m— interrupted\x1b[0m");
+            }
+        }
+        AgentEvent::Err(e) => {
+            eprintln!("\x1b[31m✗ {e}\x1b[0m");
+            code = 1;
+        }
+        AgentEvent::Round(_) => {}
     };
     loop {
         tokio::select! {
