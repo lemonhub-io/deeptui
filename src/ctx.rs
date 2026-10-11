@@ -19,6 +19,50 @@ pub fn total_tokens(msgs: &[Msg]) -> usize {
     msgs.iter().map(msg_tokens).sum()
 }
 
+/// Scrub message states the chat API rejects — left behind by interrupted
+/// streams or future regressions. Runs each round before `compact`.
+/// - tool_calls never answered by a tool message are stripped
+/// - assistant messages left with neither content nor tool_calls are dropped
+/// - tool results whose call is missing are dropped
+///
+/// Returns the number of fixes applied.
+pub fn repair(msgs: &mut Vec<Msg>) -> usize {
+    let answered: HashSet<String> = msgs
+        .iter()
+        .filter(|m| m.role == "tool")
+        .filter_map(|m| m.tool_call_id.clone())
+        .collect();
+    let mut fixed = 0usize;
+    for m in msgs.iter_mut() {
+        if m.role == "assistant" {
+            if let Some(tcs) = &mut m.tool_calls {
+                let n = tcs.len();
+                tcs.retain(|t| answered.contains(&t.id));
+                fixed += n - tcs.len();
+                if tcs.is_empty() {
+                    m.tool_calls = None;
+                }
+            }
+        }
+    }
+    let n0 = msgs.len();
+    msgs.retain(|m| m.role != "assistant" || m.content.is_some() || m.tool_calls.is_some());
+    let ids: HashSet<String> = msgs
+        .iter()
+        .flat_map(|m| m.tool_calls.iter())
+        .flat_map(|v| v.iter())
+        .map(|t| t.id.clone())
+        .collect();
+    msgs.retain(|m| {
+        m.role != "tool"
+            || m.tool_call_id
+                .as_deref()
+                .map(|id| ids.contains(id))
+                .unwrap_or(false)
+    });
+    fixed + n0 - msgs.len()
+}
+
 /// Two-stage compaction, run before each API call when over `budget`.
 /// Stage 1 (cheap, surgical): replace old tool outputs >240 chars with "[elided]"
 /// — old file reads/searches are almost never re-read by the model.
@@ -98,6 +142,44 @@ mod tests {
                 arguments: "{}".into(),
             },
         }
+    }
+
+    #[test]
+    fn repairs_interrupt_artifacts() {
+        // cancelled before any token: empty assistant msg must go
+        let mut msgs = vec![
+            Msg::system("s"),
+            Msg::user("q"),
+            Msg::assistant(None, vec![]),
+        ];
+        assert_eq!(repair(&mut msgs), 1);
+        assert_eq!(msgs.len(), 2);
+
+        // cancelled mid tool-call + orphan tool result + dangling call
+        let mut msgs = vec![
+            Msg::system("s"),
+            Msg::user("q"),
+            Msg::assistant(Some("working".into()), vec![tc("c1")]),
+            Msg::tool("c1", "done"),
+            Msg::assistant(None, vec![]),
+            Msg::assistant(None, vec![tc("c2")]),
+            Msg::tool("ghost", "x"),
+        ];
+        repair(&mut msgs);
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["system", "user", "assistant", "tool"]);
+        // every surviving tool_call id has a response and vice versa
+        let call_ids: HashSet<&str> = msgs
+            .iter()
+            .flat_map(|m| m.tool_calls.iter())
+            .flat_map(|v| v.iter())
+            .map(|t| t.id.as_str())
+            .collect();
+        let resp_ids: HashSet<&str> = msgs
+            .iter()
+            .filter_map(|m| m.tool_call_id.as_deref())
+            .collect();
+        assert_eq!(call_ids, resp_ids);
     }
 
     #[test]

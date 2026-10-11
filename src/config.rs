@@ -8,7 +8,6 @@ struct FileCfg {
     model: Option<String>,
     context_budget: Option<usize>,
     max_output_tokens: Option<u32>,
-    max_iters: Option<usize>,
     bash_timeout_ms: Option<u64>,
     price_input: Option<f64>,
     price_output: Option<f64>,
@@ -78,7 +77,6 @@ pub struct Config {
     /// Compact history when the estimate exceeds this many tokens.
     pub context_budget: usize,
     pub max_output_tokens: u32,
-    pub max_iters: usize,
     pub bash_timeout_ms: u64,
     pub price_in: f64,
     pub price_out: f64,
@@ -93,7 +91,6 @@ impl Config {
         base_url: Option<&str>,
         api_key: Option<&str>,
         budget: Option<usize>,
-        max_iters: Option<usize>,
         no_map: bool,
     ) -> Result<Self> {
         let f: FileCfg = Self::config_path()
@@ -148,7 +145,6 @@ impl Config {
             model,
             context_budget: budget.or(f.context_budget).unwrap_or(60_000),
             max_output_tokens: f.max_output_tokens.unwrap_or(8_192),
-            max_iters: max_iters.or(f.max_iters).unwrap_or(40),
             bash_timeout_ms: f.bash_timeout_ms.unwrap_or(30_000),
             price_in: pi,
             price_out: po,
@@ -198,7 +194,6 @@ impl Config {
              # model = \"deepseek-chat\"\n\
              # context_budget = 60000\n\
              # max_output_tokens = 8192\n\
-             # max_iters = 40\n\
              # bash_timeout_ms = 30000\n\
              # price_input = 0.15\n\
              # price_output = 0.60\n\

@@ -93,9 +93,12 @@ pub async fn run(
 ) {
     msgs.push(Msg::user(prompt));
     let specs = tools::specs();
+    let mut round = 0usize;
 
-    for round in 0..cfg.max_iters {
-        let _ = tx.send(AgentEvent::Round(round + 1)).await;
+    loop {
+        round += 1;
+        let _ = tx.send(AgentEvent::Round(round)).await;
+        ctx::repair(msgs);
         if let Some(note) = ctx::compact(msgs, cfg.context_budget) {
             let _ = tx.send(AgentEvent::Compacted(note)).await;
         }
@@ -175,19 +178,27 @@ pub async fn run(
         } else {
             Some(text.clone())
         };
-        msgs.push(Msg::assistant(content, calls.clone()));
+        let interrupted = cancel.is_cancelled();
+        // Never persist an assistant message with neither content nor
+        // tool_calls (the next request would 400). On cancel, partial tool
+        // calls are untrusted — truncated args, never executed — so only the
+        // text survives.
+        let record_calls = if interrupted {
+            Vec::new()
+        } else {
+            calls.clone()
+        };
+        if content.is_some() || !record_calls.is_empty() {
+            msgs.push(Msg::assistant(content, record_calls));
+        }
 
-        if calls.is_empty() || cancel.is_cancelled() {
-            if finish == "length" {
+        if calls.is_empty() || interrupted {
+            if finish == "length" && !interrupted {
                 let _ = tx
                     .send(AgentEvent::Err("hit max output tokens".into()))
                     .await;
             }
-            let _ = tx
-                .send(AgentEvent::Done {
-                    interrupted: cancel.is_cancelled(),
-                })
-                .await;
+            let _ = tx.send(AgentEvent::Done { interrupted }).await;
             return;
         }
 
@@ -282,10 +293,4 @@ pub async fn run(
             msgs.push(Msg::tool(c.id.clone(), content));
         }
     }
-    let _ = tx
-        .send(AgentEvent::Err(format!(
-            "hit iteration cap ({})",
-            cfg.max_iters
-        )))
-        .await;
 }

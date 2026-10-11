@@ -38,9 +38,6 @@ struct Cli {
     /// Context budget in tokens before compaction.
     #[arg(long)]
     budget: Option<usize>,
-    /// Max agent iterations per prompt.
-    #[arg(long)]
-    max_iters: Option<usize>,
     /// Force headless mode.
     #[arg(short = 'p', long)]
     print: bool,
@@ -63,7 +60,6 @@ async fn main() -> Result<()> {
         cli.base_url.as_deref(),
         cli.api_key.as_deref(),
         cli.budget,
-        cli.max_iters,
         cli.no_map,
     )?;
 

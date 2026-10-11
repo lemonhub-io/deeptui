@@ -73,7 +73,6 @@ base_url = "https://api.deepseek.com/v1"
 model = "deepseek-flash"
 context_budget = 60000      # tokens; compaction kicks in above this
 max_output_tokens = 8192
-max_iters = 40
 bash_timeout_ms = 30000
 # price_input / price_output / price_cached: $/1M for unknown models
 price_input = 0.15
@@ -84,8 +83,10 @@ price_cached = 0.003
 ## TUI
 
 Boxed startup card (model/root/context/lifetime stats) · markdown rendering in
-assistant output (headings, fenced code with a `▎` gutter, inline `` `code` `` /
-`**bold**`, bullets, quotes) · `❯`/`●`/`◆` turn markers · braille activity line
+assistant output (ATX headings, fenced and indented code with a `▎` gutter,
+inline `` `code` `` / `**bold**` / `*italic*` / `~~strike~~` / links, bullets and
+ordered lists with hanging indents, blockquotes, `---` rules and boxed pipe
+tables) · `❯`/`●`/`◆` turn markers · braille activity line
 while running · segmented status bar with a `▲ scrolled` indicator.
 
 ### TUI keys
