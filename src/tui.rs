@@ -195,6 +195,12 @@ impl App {
 
     fn rebuild_stream(&mut self) {
         self.stream_wrapped.clear();
+        self.stream_dirty = false;
+        // an empty stream must add no phantom line: it would inflate the
+        // scroll total and push the first content line off-screen
+        if self.stream.is_empty() {
+            return;
+        }
         let mut fence = self.in_fence;
         let w = self.wrap_w.max(20);
         let mut first = true;
@@ -205,7 +211,6 @@ impl App {
             }
             self.stream_wrapped.extend(wrap_sline(&sl, self.wrap_w));
         }
-        self.stream_dirty = false;
     }
 
     fn scroll_by(&mut self, d: isize) {
@@ -327,6 +332,9 @@ fn apply(app: &mut App, ev: AgentEvent, cfg: &Config) {
         }
         AgentEvent::Done { interrupted } => {
             app.flush_stream();
+            // the fence state is per-message: an unclosed block must not
+            // style the next response as code
+            app.in_fence = false;
             app.running = false;
             let secs = app
                 .started
@@ -439,7 +447,7 @@ fn md_flush(out: &mut SLine, buf: &mut String, code: bool, bold: bool, italic: b
     }
 }
 
-/// Parse `[label](url)` at the start of `s` → (label, url, bytes consumed).
+/// Parse `[label](url)` at the start of `s` → (label, url, chars consumed).
 fn md_link(s: &str) -> Option<(String, String, usize)> {
     let rest = s.strip_prefix('[')?;
     let close = rest.find(']')?;
@@ -453,7 +461,39 @@ fn md_link(s: &str) -> Option<(String, String, usize)> {
     if url.is_empty() || url.contains(char::is_whitespace) {
         return None;
     }
-    Some((label.to_string(), url.to_string(), close + end + 4))
+    // chars, not bytes: find() gives byte offsets, the caller steps chars
+    let n = label.chars().count() + url_part[..end].chars().count() + 4;
+    Some((label.to_string(), url.to_string(), n))
+}
+
+/// The char just before the cursor — the end of `buf`, or of the last flushed
+/// span when `buf` is empty — is non-space, so a marker may close here.
+fn md_prev_non_ws(buf: &str, out: &SLine) -> bool {
+    buf.chars()
+        .last()
+        .or_else(|| out.last().and_then(|(s, _)| s.chars().last()))
+        .is_some_and(|p| !p.is_whitespace())
+}
+
+/// `rest` holds `cc` somewhere — a usable `**`/`__`/`~~` closer.
+fn md_has_pair(rest: &str, c: char) -> bool {
+    rest.chars()
+        .zip(rest.chars().skip(1))
+        .any(|(a, b)| a == c && b == c)
+}
+
+/// `rest` holds a standalone `c` (not the edge of an `cc` run) that can close
+/// a single-marker span — so `*args` never pairs with a `**` in `**kwargs`.
+fn md_has_single(rest: &str, c: char) -> bool {
+    let mut prev = false;
+    let mut it = rest.chars().peekable();
+    while let Some(ch) = it.next() {
+        if ch == c && !prev && it.peek() != Some(&c) {
+            return true;
+        }
+        prev = ch == c;
+    }
+    false
 }
 
 /// Style inline spans inside one markdown line: `code`, **bold**, *italic*,
@@ -471,25 +511,65 @@ fn md_inline(t: &str) -> SLine {
                 }
             }
             '`' => {
-                md_flush(&mut out, &mut buf, code, bold, italic, strike);
-                code = !code;
+                // an unmatched backtick stays literal instead of styling the
+                // rest of the line as code
+                if !code && !chars.clone().any(|x| x == '`') {
+                    buf.push('`');
+                } else {
+                    md_flush(&mut out, &mut buf, code, bold, italic, strike);
+                    code = !code;
+                }
             }
             '*' | '_' if !code => {
-                if chars.peek() == Some(&c) {
-                    chars.next();
-                    md_flush(&mut out, &mut buf, code, bold, italic, strike);
-                    bold = !bold;
+                // flanking rules, simplified: a marker opens only next to a
+                // non-space and closes only after a non-space — `2 * 3 * 4`,
+                // `a *b` and `*args` keep their asterisks
+                let prev_non_ws = md_prev_non_ws(&buf, &out);
+                let rest: String = chars.clone().collect();
+                if rest.starts_with(c) {
+                    // `**` / `__`
+                    let after = &rest[c.len_utf8()..];
+                    let next_non_ws = after.chars().next().is_some_and(|x| !x.is_whitespace());
+                    let closes =
+                        (bold && prev_non_ws) || (!bold && next_non_ws && md_has_pair(after, c));
+                    if closes {
+                        chars.next();
+                        md_flush(&mut out, &mut buf, code, bold, italic, strike);
+                        bold = !bold;
+                    } else {
+                        buf.push(c);
+                        buf.push(c);
+                        chars.next();
+                    }
                 } else if c == '*' {
-                    md_flush(&mut out, &mut buf, code, bold, italic, strike);
-                    italic = !italic;
+                    let next_non_ws = rest.chars().next().is_some_and(|x| !x.is_whitespace());
+                    let closes = (italic && prev_non_ws)
+                        || (!italic && next_non_ws && md_has_single(&rest, '*'));
+                    if closes {
+                        md_flush(&mut out, &mut buf, code, bold, italic, strike);
+                        italic = !italic;
+                    } else {
+                        buf.push('*');
+                    }
                 } else {
                     buf.push(c); // a lone `_` (snake_case) stays literal
                 }
             }
             '~' if !code && chars.peek() == Some(&'~') => {
-                chars.next();
-                md_flush(&mut out, &mut buf, code, bold, italic, strike);
-                strike = !strike;
+                let rest: String = chars.clone().collect();
+                let after = &rest[1..];
+                let next_non_ws = after.chars().next().is_some_and(|x| !x.is_whitespace());
+                let closes = (strike && md_prev_non_ws(&buf, &out))
+                    || (!strike && next_non_ws && md_has_pair(after, '~'));
+                if closes {
+                    chars.next();
+                    md_flush(&mut out, &mut buf, code, bold, italic, strike);
+                    strike = !strike;
+                } else {
+                    buf.push('~');
+                    buf.push('~');
+                    chars.next();
+                }
             }
             '[' if !code => {
                 let rest: String = std::iter::once('[').chain(chars.clone()).collect();
@@ -641,10 +721,12 @@ fn md_line(raw: &str, in_fence: &mut bool) -> (SLine, bool) {
     let t = raw.trim_start();
     if t.starts_with("```") || t.starts_with("~~~") {
         *in_fence = !*in_fence;
-        return (
-            vec![("  ▎ ".into(), C_GUTTER), (t.to_string(), C_DIM)],
-            true,
-        );
+        let lang = t.trim_start_matches(['`', '~']).trim();
+        let mut l: SLine = vec![("  ▎ ".into(), C_GUTTER)];
+        if !lang.is_empty() {
+            l.push((lang.to_string(), C_DIM));
+        }
+        return (l, true);
     }
     if *in_fence {
         return (
@@ -859,6 +941,9 @@ fn md_table(rows: &[String], sep: &str, width: usize) -> Vec<(SLine, bool)> {
 /// Block-level markdown: a whole assistant message (or the live, still growing
 /// stream) into styled scrollback lines. `width` sizes rules and tables.
 fn md_block(text: &str, in_fence: &mut bool, width: usize) -> Vec<(SLine, bool)> {
+    if text.is_empty() {
+        return Vec::new();
+    }
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<(SLine, bool)> = Vec::new();
     let mut i = 0usize;
@@ -1582,5 +1667,122 @@ mod tests {
         assert!(s.contains("working · step 3"), "activity line:\n{s}");
         assert!(s.contains("step 3"), "status step:\n{s}");
         assert!(s.contains("Enter queues"), "running title:\n{s}");
+    }
+}
+
+#[cfg(test)]
+mod md_regression_tests {
+    use super::*;
+    use crate::config::Config;
+    use ratatui::backend::TestBackend;
+
+    fn cfg() -> Config {
+        Config {
+            api_key: String::new(),
+            base_url: String::new(),
+            model: "m".into(),
+            context_budget: 64_000,
+            max_output_tokens: 4096,
+            bash_timeout_ms: 60_000,
+            price_in: 0.15,
+            price_out: 0.6,
+            price_cached: 0.003,
+            ds_peak: false,
+            use_map: true,
+        }
+    }
+
+    fn text_of(l: &SLine) -> String {
+        l.iter().map(|(t, _)| t.as_str()).collect()
+    }
+
+    #[test]
+    fn unmatched_markers_stay_literal() {
+        // emphasis/code delimiters with no closer must not be eaten
+        for (raw, want) in [
+            ("a*b", "a*b"),
+            ("use *args and **kwargs", "use *args and **kwargs"),
+            ("2 * 3 * 4", "2 * 3 * 4"), // pairs DO emphasise
+            ("x ~~ y", "x ~~ y"),
+            ("a `b", "a `b"),
+            ("cost a**b", "cost a**b"),
+            ("f(*a, **k)", "f(*a, **k)"),
+            ("100% sure ~done", "100% sure ~done"),
+        ] {
+            assert_eq!(text_of(&md_inline(raw)), want, "{raw}");
+        }
+        // and matched pairs still style
+        let l = md_inline("a*b*c");
+        assert_eq!(text_of(&l), "abc");
+        assert!(l[1].1.add_modifier.contains(Modifier::ITALIC), "{l:?}");
+        let l = md_inline("**b**");
+        assert_eq!(text_of(&l), "b");
+        assert!(l[0].1.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn link_with_wide_label_keeps_tail() {
+        // consumed count is chars, not bytes — CJK labels must not eat text
+        let l = md_inline("[文档](http://x) tail");
+        assert_eq!(text_of(&l), "文档 (http://x) tail");
+    }
+
+    #[test]
+    fn empty_stream_adds_no_phantom_line() {
+        // after a flush, rebuild_stream("") must leave stream_wrapped empty —
+        // a phantom line inflates the scroll total and eats the top row
+        let mut app = App::new();
+        app.stream = "## Plan\n\ntext".into();
+        app.flush_stream();
+        app.rebuild_stream();
+        assert!(app.stream_wrapped.is_empty());
+        assert!(!app.stream_dirty);
+    }
+
+    #[test]
+    fn flushed_content_does_not_overscroll() {
+        // the phantom stream line used to add +1 to the scroll total, pushing
+        // follow-mode one line past the real end on every full chat
+        let mut app = App::new();
+        app.stream = "## Plan\n\n".to_owned() + &"line\n".repeat(40) + "done";
+        app.flush_stream();
+        let backend = TestBackend::new(64, 10);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| render(f, &mut app)).unwrap();
+        // chat is 10 - 3 (input) - 1 (status) = 6 rows; follow-scroll must
+        // land exactly on wrapped.len() - 6, not one further
+        assert_eq!(app.scroll, app.wrapped.len().saturating_sub(6));
+    }
+
+    #[test]
+    fn unclosed_fence_does_not_leak_into_next_message() {
+        let mut app = App::new();
+        app.stream = "```rust\nlet x = 1;".into();
+        app.flush_stream();
+        assert!(app.in_fence);
+        let cfg = cfg();
+        apply(&mut app, AgentEvent::Done { interrupted: false }, &cfg);
+        assert!(!app.in_fence);
+        app.stream = "plain answer".into();
+        app.flush_stream();
+        let last_txt: String = app
+            .log
+            .iter()
+            .rev()
+            .map(text_of)
+            .find(|t| !t.trim().is_empty() && !t.contains("done"))
+            .unwrap();
+        assert_eq!(last_txt, "● plain answer", "{last_txt}");
+    }
+
+    #[test]
+    fn fence_delimiter_shows_lang_not_backticks() {
+        let mut fence = false;
+        let (l, _) = md_line("```rust", &mut fence);
+        let t = text_of(&l);
+        assert_eq!(t, "  ▎ rust", "{t}");
+        let (l, _) = md_line("```", &mut fence);
+        assert_eq!(text_of(&l), "  ▎ ");
+        assert!(!fence);
     }
 }
