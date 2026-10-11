@@ -271,7 +271,13 @@ async fn driver(
                 c = inbox.recv(), if open => match c {
                     Some(UserCmd::Cancel) => cancel.cancel(),
                     Some(UserCmd::Prompt(p)) => next = Some(p),
-                    None => { open = false; cancel.cancel(); }
+                    None => {
+                        // UI is gone: cancel the run and drop any queued
+                        // prompt — running it would burn tokens nobody sees
+                        open = false;
+                        next = None;
+                        cancel.cancel();
+                    }
                 },
             }
         }

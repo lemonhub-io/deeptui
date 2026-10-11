@@ -143,7 +143,8 @@ impl Config {
             api_key,
             base_url: base_url.trim_end_matches('/').to_string(),
             model,
-            context_budget: budget.or(f.context_budget).unwrap_or(60_000),
+            // floor: a degenerate budget would compact the whole history away
+            context_budget: budget.or(f.context_budget).unwrap_or(60_000).max(4_000),
             max_output_tokens: f.max_output_tokens.unwrap_or(8_192),
             bash_timeout_ms: f.bash_timeout_ms.unwrap_or(30_000),
             price_in: pi,
@@ -184,7 +185,9 @@ impl Config {
 
     pub fn write_example() -> Result<()> {
         let p = Self::config_path().context("no config dir")?;
-        std::fs::create_dir_all(p.parent().unwrap())?;
+        if let Some(d) = p.parent() {
+            std::fs::create_dir_all(d)?;
+        }
         std::fs::write(
             &p,
             "# ragent config — all fields optional, env vars take precedence over this file,\n\

@@ -7,6 +7,7 @@ use std::sync::Arc;
 const LINE_CAP: usize = 400; // max chars of a single source line returned
 const READ_MAX: usize = 2000; // hard cap on lines per read
 const READ_BYTES: usize = 96 * 1024;
+const READ_FILE_MAX: usize = 4 * 1024 * 1024; // read at most the head of a file
 const BASH_LINES: usize = 250;
 const GREP_MAX: usize = 200;
 const LS_MAX: usize = 300;
@@ -117,7 +118,18 @@ fn rel(root: &Path, p: &Path) -> String {
 
 fn read_file_sync(root: &Path, args: &Value) -> Result<String, String> {
     let p = resolve(root, args["path"].as_str().unwrap_or(""))?;
-    let bytes = std::fs::read(&p).map_err(|e| format!("{}: {e}", rel(root, &p)))?;
+    // read at most READ_FILE_MAX + 1 bytes — the +1 detects truncation
+    // without a stat call; a giant file can't OOM the agent
+    let mut bytes = Vec::new();
+    let truncated = {
+        use std::io::Read;
+        let f = std::fs::File::open(&p).map_err(|e| format!("{}: {e}", rel(root, &p)))?;
+        f.take(READ_FILE_MAX as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("{}: {e}", rel(root, &p)))?;
+        bytes.len() > READ_FILE_MAX
+    };
+    bytes.truncate(READ_FILE_MAX);
     if bytes[..bytes.len().min(8192)].contains(&0) {
         return Err(format!("{}: binary file", rel(root, &p)));
     }
@@ -126,6 +138,7 @@ fn read_file_sync(root: &Path, args: &Value) -> Result<String, String> {
     let limit = (args["limit"].as_u64().unwrap_or(400) as usize).clamp(1, READ_MAX);
     let mut out = String::new();
     let mut shown = 0usize;
+    // with only the head loaded, the line count is a lower bound
     let total = text.lines().count();
     for (i, line) in text.lines().enumerate().skip(offset - 1) {
         if shown >= limit || out.len() > READ_BYTES {
@@ -147,6 +160,12 @@ fn read_file_sync(root: &Path, args: &Value) -> Result<String, String> {
         }
         out.push_str(&format!("{:>4}│{}{}\n", i + 1, l, note));
         shown += 1;
+    }
+    if truncated {
+        out.push_str(&format!(
+            "… file truncated: only the first {} MB shown\n",
+            READ_FILE_MAX / (1024 * 1024)
+        ));
     }
     if shown == 0 {
         if total == 0 {

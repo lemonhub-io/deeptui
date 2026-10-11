@@ -46,7 +46,9 @@ pub fn load() -> Stats {
 
 pub fn record(model: &str, input: u64, output: u64, cached: u64, cost: f64, ok: bool) {
     let Some(p) = path() else { return };
-    let _ = std::fs::create_dir_all(p.parent().unwrap());
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

@@ -155,6 +155,13 @@ pub async fn run(
             let _ = tx.send(AgentEvent::Err(format!("{e:#}"))).await;
             return;
         }
+        // providers signal mid-stream failures via an "error" object that the
+        // parser folds into Finish — surface it instead of recording a
+        // successful empty turn
+        if let Some(e) = finish.strip_prefix("api error:") {
+            let _ = tx.send(AgentEvent::Err(e.trim().to_string())).await;
+            return;
+        }
 
         let calls: Vec<ToolCall> = builders
             .into_values()
@@ -242,6 +249,18 @@ pub async fn run(
                     Err(e) => {
                         let _ = tx.send(AgentEvent::Err(format!("tool task: {e}"))).await;
                     }
+                }
+            }
+            // a panicked task produced no result — synthesize errors so every
+            // tool_call gets a response and the history stays API-valid
+            for (i, c) in calls.iter().enumerate() {
+                if !results.iter().any(|r| r.idx == i) {
+                    results.push(ExecResult {
+                        idx: i,
+                        name: c.function.name.clone(),
+                        res: Err("tool task failed".into()),
+                        ms: 0,
+                    });
                 }
             }
             results.sort_by_key(|r| r.idx);
