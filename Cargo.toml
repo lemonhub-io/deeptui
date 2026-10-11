@@ -1,0 +1,32 @@
+[package]
+name = "ragent"
+version = "0.1.0"
+edition = "2021"
+description = "Lean Rust coding agent: extreme cost & speed optimization"
+license = "Apache-2.0"
+keywords = ["ai", "agent", "llm", "cli", "tui"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "fs", "io-util", "time", "sync", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream", "bracketed-paste"] }
+futures = "0.3"
+unicode-width = "0.2"
+ignore = "0.4"
+regex = "1"
+dirs = "5"
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 3
+panic = "abort"
