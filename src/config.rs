@@ -13,6 +13,7 @@ struct FileCfg {
     price_output: Option<f64>,
     price_cached: Option<f64>,
     use_map: Option<bool>,
+    update_check: Option<bool>,
 }
 
 /// $ per 1M tokens: (prefix, input miss, output, input cache-hit, deepseek peak hours ×2).
@@ -87,6 +88,8 @@ pub struct Config {
     pub price_cached: f64,
     pub ds_peak: bool,
     pub use_map: bool,
+    /// Look for a newer release on startup (cached, at most once a day).
+    pub update_check: bool,
 }
 
 impl Config {
@@ -160,6 +163,11 @@ impl Config {
             } else {
                 f.use_map.unwrap_or(true)
             },
+            // set `RAGENT_NO_UPDATE_CHECK` to anything non-empty to opt out
+            update_check: f.update_check.unwrap_or(true)
+                && std::env::var("RAGENT_NO_UPDATE_CHECK")
+                    .map(|v| v.is_empty())
+                    .unwrap_or(true),
         })
     }
 
@@ -204,7 +212,9 @@ impl Config {
              # bash_timeout_ms = 30000\n\
              # price_input = 0.15\n\
              # price_output = 0.60\n\
-             # price_cached = 0.003\n",
+             # price_cached = 0.003\n\
+             # use_map = true\n\
+             # update_check = true   # look for a newer release once a day\n",
         )?;
         println!("wrote {}", p.display());
         Ok(())
@@ -232,6 +242,7 @@ mod tests {
             price_cached: 0.075,
             ds_peak: false,
             use_map: true,
+            update_check: false,
         }
     }
 

@@ -40,6 +40,13 @@ pub(super) fn banner(app: &mut App, cfg: &Config, root: &std::path::Path) {
             "unknown — set price_input/price_output in config.toml".into(),
         ));
     }
+    // Set from the last cached check — the banner never waits on the network.
+    if let Some(tag) = &app.update {
+        rows.push((
+            "update".into(),
+            format!("{tag} available — ragent --self-update"),
+        ));
+    }
     let label_w = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
     let inner_w = rows
         .iter()
@@ -271,6 +278,7 @@ mod tests {
             price_cached: 0.003,
             ds_peak: false,
             use_map: true,
+            update_check: false,
         }
     }
 
@@ -321,6 +329,27 @@ mod tests {
         assert!(s.contains("└ ✓ 4ms"), "tool end:\n{s}");
         assert!(s.contains("idle"), "status:\n{s}");
         assert!(s.contains("ask anything"), "placeholder:\n{s}");
+    }
+
+    #[test]
+    fn banner_advertises_a_newer_release() {
+        let mut app = App::new();
+        app.model = "test-model".into();
+        app.update = Some("v9.9.9".into());
+        banner(&mut app, &cfg(), std::path::Path::new("/tmp/x"));
+        assert!(
+            app.log
+                .iter()
+                .any(|l| l.iter().any(|(t, _)| t.contains("v9.9.9 available"))),
+            "banner must offer the update"
+        );
+        // …and stays quiet when the running build is current
+        let mut plain = App::new();
+        banner(&mut plain, &cfg(), std::path::Path::new("/tmp/x"));
+        assert!(plain
+            .log
+            .iter()
+            .all(|l| l.iter().all(|(t, _)| !t.contains("available"))));
     }
 
     #[test]

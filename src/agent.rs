@@ -84,6 +84,7 @@ mod tests {
             price_cached: 0.01,
             ds_peak: false,
             use_map: false,
+            update_check: false,
         }
     }
 

@@ -35,6 +35,28 @@ Windows x86_64 (`.zip`; on Windows the script prints the asset to grab).
 Anything else, or an x86 CPU without AVX2, falls back to `--from-source`.
 Environment overrides: `RAGENT_VERSION`, `RAGENT_INSTALL_DIR`.
 
+## Updating
+
+```sh
+ragent --self-update             # fetch, verify and swap in the newest release
+ragent --check-update            # just report, don't touch anything
+ragent --self-update --update-tag v0.5.0   # pin a tag
+```
+
+`--self-update` is the same release path as the installer, done in-process:
+the asset for this platform is downloaded, its SHA-256 is checked against the
+release's `SHA256SUMS.txt`, the binary is run once (`--version` must match the
+tag), and only then is it `rename`d over the running `ragent` — an interrupted
+update can never leave a half-written binary. It needs write access to the
+directory holding the binary (not the binary itself), and takes effect on the
+next start.
+
+The TUI also checks once a day in the background and shows a line in the
+startup card (`▸ update v0.5.0 available — ragent --self-update`). The answer is
+cached in `$XDG_DATA_HOME/ragent/update-check`, so at most one request a day;
+disable it with `update_check = false` in `config.toml`,
+`RAGENT_NO_UPDATE_CHECK=1`, or `--no-update-check`.
+
 ## Quickstart
 
 ```sh

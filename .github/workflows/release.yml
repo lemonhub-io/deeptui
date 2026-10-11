@@ -36,6 +36,18 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
+      # Self-update refuses an asset whose `--version` differs from the tag, so
+      # a tag that does not match Cargo.toml would publish an uninstallable
+      # release (and every client would see a phantom update forever).
+      - name: tag matches the crate version
+        shell: bash
+        run: |
+          set -e
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "${GITHUB_REF_NAME#v}" != "$v" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} != Cargo.toml version $v — bump Cargo.toml before tagging"
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}

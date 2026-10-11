@@ -7,6 +7,7 @@ mod stats;
 mod tools;
 mod tui;
 mod types;
+mod update;
 mod util;
 
 #[cfg(test)]
@@ -50,21 +51,47 @@ struct Cli {
     /// Write an example config file and exit.
     #[arg(long)]
     init: bool,
+    /// Update to the latest release and exit.
+    #[arg(long)]
+    self_update: bool,
+    /// Report whether a newer release exists, then exit.
+    #[arg(long)]
+    check_update: bool,
+    /// Release tag for --self-update (default: the latest release).
+    #[arg(long, value_name = "TAG")]
+    update_tag: Option<String>,
+    /// Don't check for a newer release on startup.
+    #[arg(long)]
+    no_update_check: bool,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    // Self-update runs before any config is read: updating needs no API key.
+    if cli.self_update || cli.check_update {
+        let http = update::client(std::time::Duration::from_secs(120))?;
+        return if cli.check_update {
+            update::report(&http).await
+        } else {
+            update::run(&http, cli.update_tag.as_deref()).await
+        };
+    }
     if cli.init {
         return Config::write_example();
     }
-    let cfg = Config::load(
+    // Sweep leftovers of an earlier swap (Windows keeps the old image aside).
+    update::cleanup_stale();
+    let mut cfg = Config::load(
         cli.model.as_deref(),
         cli.base_url.as_deref(),
         cli.api_key.as_deref(),
         cli.budget,
         cli.no_map,
     )?;
+    if cli.no_update_check {
+        cfg.update_check = false;
+    }
 
     let mut prompt = cli.prompt.join(" ");
     let piped = if std::io::stdin().is_terminal() {
@@ -95,6 +122,18 @@ async fn main() -> Result<()> {
 /// Non-interactive run: assistant text → stdout, tool/status lines → stderr.
 async fn headless(cfg: Config, prompt: String) -> Result<()> {
     let root = std::env::current_dir()?;
+    // One cached lookup, concurrently with the run: never on the critical path.
+    if cfg.update_check {
+        let c = cfg.clone();
+        tokio::spawn(async move {
+            if let Some(tag) = update::check(&c).await {
+                eprintln!(
+                    "\x1b[2m↑ ragent {tag} available — ragent --self-update (you have {})\x1b[0m",
+                    update::current_version()
+                );
+            }
+        });
+    }
     let http = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
         .build()?;

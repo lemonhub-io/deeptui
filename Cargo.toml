@@ -23,6 +23,9 @@ ignore = "0.4"
 regex = "1"
 dirs = "5"
 tokio-util = { version = "0.7" }
+# self-update only: gzip + raw inflate for the release assets. Pure Rust
+# backend, no C toolchain, and nothing is decompressed unless we update.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
 # `cargo test` needs a runtime + loopback HTTP for the stub server.

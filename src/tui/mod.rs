@@ -98,6 +98,8 @@ struct App {
     fail_cnt: u64,
     started: Option<Instant>,
     model: String,
+    /// Newer release found by the last check (banner line, TUI notice).
+    update: Option<String>,
 
     agent_dead: bool,
     quit: bool,
@@ -136,6 +138,7 @@ impl App {
             fail_cnt: 0,
             started: None,
             model: String::new(),
+            update: None,
             agent_dead: false,
             quit: false,
         }
@@ -452,7 +455,12 @@ async fn run_ui(term: &mut Terminal<CrosstermBackend<io::Stdout>>, cfg: Config) 
 
     let mut app = App::new();
     app.model = cfg.model.clone();
+    app.update = crate::update::cached_update();
     banner(&mut app, &cfg, &root);
+
+    // startup update check: one cached request, resolved whenever it lands
+    let mut update_check = Box::pin(crate::update::check(&cfg));
+    let mut checked = false;
 
     let mut keys = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(300));
@@ -507,6 +515,16 @@ async fn run_ui(term: &mut Terminal<CrosstermBackend<io::Stdout>>, cfg: Config) 
                 }
             }
             _ = tick.tick() => {}
+            tag = &mut update_check, if !checked => {
+                checked = true;
+                if let Some(tag) = tag {
+                    app.note(format!(
+                        "↑ ragent {tag} available (you have {}) — run `ragent --self-update`",
+                        crate::update::current_version()
+                    ));
+                    app.update = Some(tag);
+                }
+            }
         }
         term.draw(|f| render(f, &mut app))?;
         if app.quit {
@@ -533,6 +551,7 @@ mod tests {
             price_cached: 0.003,
             ds_peak: false,
             use_map: true,
+            update_check: false,
         }
     }
 

@@ -588,6 +588,8 @@ main() {
   printf '%s%s is ready.%s Run it with: %s%s%s\n' "$c_bold" "$BIN" "$c_off" "$c_bold" "$bin_dir/$BIN" "$c_off"
   printf 'First run: set an API key (%sRAGENT_API_KEY=sk-…%s) or run %s%s --init%s.\n' \
     "$c_dim" "$c_off" "$c_dim" "$BIN" "$c_off"
+  printf 'Later: %s%s --self-update%s swaps in the newest release in place.\n' \
+    "$c_dim" "$BIN" "$c_off"
 }
 
 # Clean up the scratch dir on any exit path (including failures).
