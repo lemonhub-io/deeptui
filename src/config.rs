@@ -13,6 +13,7 @@ struct FileCfg {
     price_output: Option<f64>,
     price_cached: Option<f64>,
     use_map: Option<bool>,
+    map_bytes: Option<usize>,
     update_check: Option<bool>,
 }
 
@@ -88,6 +89,8 @@ pub struct Config {
     pub price_cached: f64,
     pub ds_peak: bool,
     pub use_map: bool,
+    /// Byte budget for the repo map injected into the system prompt.
+    pub map_bytes: usize,
     /// Look for a newer release on startup (cached, at most once a day).
     pub update_check: bool,
 }
@@ -163,6 +166,15 @@ impl Config {
             } else {
                 f.use_map.unwrap_or(true)
             },
+            map_bytes: get(
+                None,
+                "RAGENT_MAP_BYTES",
+                f.map_bytes.map(|b| b.to_string()),
+                "",
+            )
+            .parse::<usize>()
+            .map(|b| b.clamp(crate::repomap::MIN_BUDGET, crate::repomap::MAX_BUDGET))
+            .unwrap_or(crate::repomap::DEFAULT_BUDGET),
             // set `RAGENT_NO_UPDATE_CHECK` to anything non-empty to opt out
             update_check: f.update_check.unwrap_or(true)
                 && std::env::var("RAGENT_NO_UPDATE_CHECK")
@@ -214,6 +226,7 @@ impl Config {
              # price_output = 0.60\n\
              # price_cached = 0.003\n\
              # use_map = true\n\
+             # map_bytes = 5000   # repo map size in bytes\n\
              # update_check = true   # look for a newer release once a day\n",
         )?;
         println!("wrote {}", p.display());
@@ -242,6 +255,7 @@ mod tests {
             price_cached: 0.075,
             ds_peak: false,
             use_map: true,
+            map_bytes: 6_000,
             update_check: false,
         }
     }
@@ -307,6 +321,8 @@ mod tests {
         );
         assert!(c.ds_peak, "deepseek models have peak windows");
         assert!(!c.use_map, "--no-map must win over the config file");
+        // the map budget defaults to the repomap default
+        assert_eq!(c.map_bytes, crate::repomap::DEFAULT_BUDGET);
         // trailing slashes are trimmed so endpoint joins stay tidy
         assert_eq!(c.base_url, "http://x/v1");
         assert_eq!(c.model, "deepseek-reasoner");

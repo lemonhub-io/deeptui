@@ -46,11 +46,11 @@ Rules:
 - After changing code, run the relevant build/test command once.
 - Don't guess paths: ls/glob/grep first. Don't stop until the task is done.";
 
-pub fn system_prompt(root: &std::path::Path, use_map: bool) -> String {
+pub fn system_prompt(root: &std::path::Path, use_map: bool, map_bytes: usize) -> String {
     let mut s = SYSTEM.to_string();
     s.push_str(&format!("\nProject root: {}", root.display()));
     if use_map {
-        let map = repomap::build(root, 5000);
+        let map = repomap::build(root, map_bytes);
         if !map.is_empty() {
             s.push_str("\n\n## Project map\n");
             s.push_str(&map);
@@ -84,6 +84,7 @@ mod tests {
             price_cached: 0.01,
             ds_peak: false,
             use_map: false,
+            map_bytes: 5_000,
             update_check: false,
         }
     }
@@ -173,7 +174,7 @@ mod tests {
     #[test]
     fn prompt_names_the_root_and_the_rules() {
         let t = TmpDir::new("prompt");
-        let p = system_prompt(t.path(), false);
+        let p = system_prompt(t.path(), false, 5_000);
         assert!(p.starts_with("You are ragent"));
         assert!(p.contains(&format!("Project root: {}", t.path().display())));
         assert!(p.contains("Prefer edit_file"));
@@ -184,15 +185,34 @@ mod tests {
     fn project_map_is_optional_and_contains_paths() {
         let t = TmpDir::new("prompt-map");
         t.write("src/lib.rs", "pub fn exported() {}\n");
-        let with = system_prompt(t.path(), true);
+        let with = system_prompt(t.path(), true, 5_000);
         assert!(with.contains("## Project map"), "{with}");
         assert!(with.contains("src/lib.rs"));
         assert!(with.contains("    pub fn exported() {}"), "{with}");
         // dropping the map loses the repo skeleton but keeps the rules
-        let without = system_prompt(t.path(), false);
+        let without = system_prompt(t.path(), false, 5_000);
         assert!(!without.contains("## Project map"));
         assert!(without.contains("Prefer edit_file"));
         assert!(!without.contains("src/lib.rs"));
+    }
+
+    #[test]
+    fn the_injected_map_respects_the_configured_byte_budget() {
+        let t = TmpDir::new("prompt-budget");
+        let body: String = (0..14)
+            .map(|i| format!("pub fn function_{i}_name() {{}}\n"))
+            .collect();
+        for i in 0..8 {
+            t.write(&format!("src/m{i}.rs"), &body);
+        }
+        let big = system_prompt(t.path(), true, repomap::DEFAULT_BUDGET);
+        let small = system_prompt(t.path(), true, repomap::MIN_BUDGET);
+        // the default budget maps every file completely...
+        assert_eq!(big.matches("    pub fn ").count(), 8 * 14);
+        // ...while a tight one degrades into fewer symbols, not fewer files
+        assert!(small.matches("    pub fn ").count() < 8 * 14);
+        assert!(small.len() < big.len(), "the budget was ignored");
+        assert!(small.contains("src/m7.rs"), "the tree must survive");
     }
 
     #[test]
@@ -201,7 +221,7 @@ mod tests {
         t.write("AGENTS.md", "agents rules");
         t.write("CLAUDE.md", "claude rules");
         t.write(".ragent/rules.md", "local rules");
-        let p = system_prompt(t.path(), false);
+        let p = system_prompt(t.path(), false, 5_000);
         let a = p
             .find("## AGENTS.md\nagents rules")
             .expect("AGENTS.md missing");
@@ -217,18 +237,18 @@ mod tests {
     #[test]
     fn instruction_files_are_capped_and_missing_ones_skipped() {
         let t = TmpDir::new("prompt-cap");
-        let p = system_prompt(t.path(), true);
+        let p = system_prompt(t.path(), true, 5_000);
         assert!(!p.contains("## AGENTS.md"));
         assert!(!p.contains("## CLAUDE.md"));
         assert!(!p.contains("## .ragent/rules.md"));
 
         // a directory named AGENTS.md must not blow up the prompt builder
         std::fs::create_dir_all(t.join("AGENTS.md")).unwrap();
-        assert!(!system_prompt(t.path(), false).contains("## AGENTS.md"));
+        assert!(!system_prompt(t.path(), false, 5_000).contains("## AGENTS.md"));
         std::fs::remove_dir_all(t.join("AGENTS.md")).unwrap();
 
         t.write("AGENTS.md", &"x".repeat(5000));
-        let p = system_prompt(t.path(), false);
+        let p = system_prompt(t.path(), false, 5_000);
         let body = p.split("## AGENTS.md\n").nth(1).unwrap();
         assert_eq!(body.chars().count(), 4000);
         assert_eq!(body, "x".repeat(4000));

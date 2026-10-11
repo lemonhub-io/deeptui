@@ -500,8 +500,8 @@ kbd{
       <div class="card" data-reveal>
         <div class="ico" aria-hidden="true">&#9635;</div>
         <h3>Repo map, injected once</h3>
-        <p>A file tree plus symbol outlines — orientation without shipping a single file body.</p>
-        <span class="card__ref">repomap.rs</span>
+        <p>A file tree plus symbol outlines — ranked so entry points get the detail, with a byte budget that never ships a file body. See it with <code class="mono">ragent --dump-map</code>.</p>
+        <span class="card__ref">repomap.rs::build</span>
       </div>
       <div class="card" data-reveal>
         <div class="ico" aria-hidden="true">&#9851;</div>
@@ -677,7 +677,7 @@ tasks 8/8 ✓ · avg <span style="color:#30d158">$0.0011</span>/✓ · total $0.
       <code><b>grep</b> · regex, gitignore-aware, glob filter</code>
       <code><b>glob</b></code>
       <code><b>ls</b></code>
-      <code><b>repomap</b></code>
+      <code><b>repomap</b> · ranked symbol map, path + byte budget</code>
     </div>
 
     <div class="split" style="margin-top:72px">
@@ -691,7 +691,7 @@ tasks 8/8 ✓ · avg <span style="color:#30d158">$0.0011</span>/✓ · total $0.
       <div class="panel" data-reveal>src/api.rs      <span style="color:#86868b">OpenAI-compatible SSE client, retries</span>
 src/tools.rs    <span style="color:#86868b">schemas + implementations, output caps</span>
 src/ctx.rs      <span style="color:#86868b">token estimation + two-stage compaction</span>
-src/repomap.rs  <span style="color:#86868b">repo skeleton builder</span>
+src/repomap.rs  <span style="color:#86868b">repo skeleton: rank, symbols, budget</span>
 src/agent.rs    <span style="color:#86868b">run loop, parallel dispatch, events</span>
 src/tui.rs      <span style="color:#86868b">ratatui UI: scrollback, input, status bar</span>
 src/config.rs   <span style="color:#86868b">config/env/CLI resolution + price table</span>
@@ -776,6 +776,7 @@ ragent --init                <span class="c"># write a commented example</span>
 ragent                                 <span class="c"># TUI</span>
 ragent <span class="s">"fix the bug in src/api.rs"</span>   <span class="c"># headless</span>
 git diff | ragent <span class="s">"review this"</span>       <span class="c"># piped stdin</span>
+ragent --dump-map                       <span class="c"># print the injected repo map</span>
 
 <span class="c"># later</span>
 ragent --self-update                    <span class="c"># verify + swap in the newest release</span></pre>

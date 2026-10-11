@@ -443,7 +443,11 @@ async fn run_ui(term: &mut Terminal<CrosstermBackend<io::Stdout>>, cfg: Config) 
     let (cmd_tx, cmd_rx) = mpsc::channel::<UserCmd>(32);
     let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(512);
 
-    let msgs = vec![Msg::system(agent::system_prompt(&root, cfg.use_map))];
+    let msgs = vec![Msg::system(agent::system_prompt(
+        &root,
+        cfg.use_map,
+        cfg.map_bytes,
+    ))];
     tokio::spawn(driver(
         msgs,
         Arc::new(cfg.clone()),
@@ -551,6 +555,7 @@ mod tests {
             price_cached: 0.003,
             ds_peak: false,
             use_map: true,
+            map_bytes: 5_000,
             update_check: false,
         }
     }

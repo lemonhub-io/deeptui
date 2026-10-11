@@ -48,6 +48,12 @@ struct Cli {
     /// Don't inject the repo map into the system prompt.
     #[arg(long)]
     no_map: bool,
+    /// Repo-map budget in bytes (default 5000, max 60000).
+    #[arg(long, value_name = "BYTES")]
+    map_bytes: Option<usize>,
+    /// Print the repo map for this directory and exit.
+    #[arg(long)]
+    dump_map: bool,
     /// Write an example config file and exit.
     #[arg(long)]
     init: bool,
@@ -80,6 +86,20 @@ async fn main() -> Result<()> {
     if cli.init {
         return Config::write_example();
     }
+    if cli.dump_map {
+        let root = std::env::current_dir()?;
+        // the same resolution order as the injected map: flag, env, default
+        let bytes = cli
+            .map_bytes
+            .or_else(|| {
+                std::env::var("RAGENT_MAP_BYTES")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+            })
+            .unwrap_or(repomap::DEFAULT_BUDGET);
+        print!("{}", repomap::build(&root, bytes));
+        return Ok(());
+    }
     // Sweep leftovers of an earlier swap (Windows keeps the old image aside).
     update::cleanup_stale();
     let mut cfg = Config::load(
@@ -91,6 +111,9 @@ async fn main() -> Result<()> {
     )?;
     if cli.no_update_check {
         cfg.update_check = false;
+    }
+    if let Some(b) = cli.map_bytes {
+        cfg.map_bytes = b.clamp(repomap::MIN_BUDGET, repomap::MAX_BUDGET);
     }
 
     let mut prompt = cli.prompt.join(" ");
@@ -138,7 +161,11 @@ async fn headless(cfg: Config, prompt: String) -> Result<()> {
         .connect_timeout(std::time::Duration::from_secs(15))
         .build()?;
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(512);
-    let mut msgs = vec![types::Msg::system(agent::system_prompt(&root, cfg.use_map))];
+    let mut msgs = vec![types::Msg::system(agent::system_prompt(
+        &root,
+        cfg.use_map,
+        cfg.map_bytes,
+    ))];
     let cancel = CancellationToken::new();
     {
         let c = cancel.clone();

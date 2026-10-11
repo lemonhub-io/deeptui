@@ -278,6 +278,7 @@ mod tests {
             price_cached: 0.003,
             ds_peak: false,
             use_map: true,
+            map_bytes: 5_000,
             update_check: false,
         }
     }

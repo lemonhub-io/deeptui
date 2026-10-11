@@ -69,8 +69,10 @@ pub fn specs() -> Vec<Value> {
                 "path":{"type":"string","description":"default root"}}}}}),
         json!({"type":"function","function":{
             "name":"repomap",
-            "description":"Condensed repo skeleton: file tree + top-level symbols. Cheap overview.",
-            "parameters":{"type":"object","properties":{}}}}),
+            "description":"Condensed repo skeleton: file tree + top-level symbols, ranked by importance. Cheap overview.",
+            "parameters":{"type":"object","properties":{
+                "path":{"type":"string","description":"subtree to map, default root"},
+                "budget":{"type":"integer","description":"bytes of output, default 6000, max 60000"}}}}}),
     ]
 }
 
@@ -424,6 +426,34 @@ fn ls_sync(root: &Path, args: &Value) -> Result<String, String> {
     Ok(out)
 }
 
+/// Repo skeleton for the whole project or one subtree. The budget is clamped,
+/// so a runaway request can never flood the context.
+fn repomap_sync(root: &Path, args: &Value) -> Result<String, String> {
+    let scoped = args["path"]
+        .as_str()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+    let dir = match scoped {
+        Some(p) => resolve(root, p)?,
+        None => root.to_path_buf(),
+    };
+    if !dir.is_dir() {
+        return Err(format!("{}: not a directory", rel(root, &dir)));
+    }
+    let budget = match args["budget"].as_u64() {
+        Some(b) => (b as usize).clamp(repomap::MIN_BUDGET, repomap::MAX_BUDGET),
+        None => 6_000,
+    };
+    let map = repomap::build(&dir, budget);
+    if map.is_empty() {
+        return Err(match scoped {
+            Some(p) => format!("{p}: no files"),
+            None => "empty project".into(),
+        });
+    }
+    Ok(map)
+}
+
 /// Execute a tool. Ok/Err both become tool-result content for the model.
 pub async fn exec(
     name: &str,
@@ -446,14 +476,7 @@ pub async fn exec(
                     "grep" => grep_sync(r, &args),
                     "glob" => glob_sync(r, &args),
                     "ls" => ls_sync(r, &args),
-                    "repomap" => {
-                        let m = repomap::build(r, 6000);
-                        if m.is_empty() {
-                            Err("empty project".into())
-                        } else {
-                            Ok(m)
-                        }
-                    }
+                    "repomap" => repomap_sync(r, &args),
                     _ => unreachable!(),
                 }
             })
@@ -831,6 +854,20 @@ mod tests {
         t.write("src/lib.rs", "pub fn a() {}\n");
         let out = run("repomap", json!({})).await.unwrap();
         assert!(out.contains("src/lib.rs") && out.contains("fn a"), "{out}");
+        // scoped to a subtree, and with an explicit budget
+        let out = run("repomap", json!({"path": "src", "budget": 500}))
+            .await
+            .unwrap();
+        assert_eq!(out, "lib.rs\n    pub fn a() {}\n");
+        assert_eq!(
+            run("repomap", json!({"path": "a.txt"})).await.unwrap_err(),
+            "a.txt: not a directory"
+        );
+        std::fs::create_dir(t.join("empty")).unwrap();
+        assert_eq!(
+            run("repomap", json!({"path": "empty"})).await.unwrap_err(),
+            "empty: no files"
+        );
         let empty = TmpDir::new("exec-empty");
         let err = exec(
             "repomap",
@@ -845,6 +882,55 @@ mod tests {
         assert_eq!(
             run("nope", json!({})).await.unwrap_err(),
             "unknown tool: nope"
+        );
+    }
+
+    #[test]
+    fn repomap_clamps_its_budget_and_reports_bad_scopes() {
+        let t = TmpDir::new("repomap-args");
+        let root = t.path();
+        let body: String = (0..60).map(|i| format!("fn f{i}() {{}}\n")).collect();
+        t.write("src/lib.rs", &body);
+
+        // a huge budget is clamped to the tool maximum
+        let out = repomap_sync(root, &json!({"budget": 10_000_000})).unwrap();
+        assert!(out.len() <= repomap::MAX_BUDGET, "{} bytes", out.len());
+        assert!(out.contains("fn f24"), "{out}");
+        assert_eq!(
+            out.matches("    fn ").count(),
+            repomap::MAX_SYMBOLS_PER_FILE
+        );
+
+        // a tiny one is raised to the floor, and still lists the tree
+        let out = repomap_sync(root, &json!({"budget": 1})).unwrap();
+        assert!(out.starts_with("src/lib.rs\n"), "{out}");
+        assert!(out.len() <= repomap::MIN_BUDGET, "{} bytes", out.len());
+
+        // scoping narrows the tree; the budget is what makes it a summary
+        let out = repomap_sync(root, &json!({"path": "src", "budget": 900})).unwrap();
+        assert!(out.starts_with("lib.rs\n"), "{out}");
+        assert!(!out.contains("src/lib.rs"), "{out}");
+        assert!(out.contains("    ...\n"), "{out}");
+        assert!(out.len() <= 900, "{} bytes", out.len());
+
+        // a path that escapes the root, and a file that is not a directory
+        assert!(repomap_sync(root, &json!({"path": "../x"}))
+            .unwrap_err()
+            .contains("escapes project root"));
+        assert_eq!(
+            repomap_sync(root, &json!({"path": "src/lib.rs"})).unwrap_err(),
+            "src/lib.rs: not a directory"
+        );
+        // a directory with no files is not an error, it is an empty map
+        std::fs::create_dir_all(t.join("hollow")).unwrap();
+        assert_eq!(
+            repomap_sync(root, &json!({"path": "hollow"})).unwrap_err(),
+            "hollow: no files"
+        );
+        // an absent budget, an empty scope and a stray space all mean "defaults"
+        assert_eq!(
+            repomap_sync(root, &json!({"path": "  "})).unwrap(),
+            repomap_sync(root, &json!({})).unwrap()
         );
     }
 

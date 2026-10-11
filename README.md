@@ -40,7 +40,7 @@ Environment overrides: `RAGENT_VERSION`, `RAGENT_INSTALL_DIR`.
 ```sh
 ragent --self-update             # fetch, verify and swap in the newest release
 ragent --check-update            # just report, don't touch anything
-ragent --self-update --update-tag v0.5.0   # pin a tag
+ragent --self-update --update-tag v0.6.0   # pin a tag
 ```
 
 `--self-update` is the same release path as the installer, done in-process:
@@ -52,7 +52,7 @@ directory holding the binary (not the binary itself), and takes effect on the
 next start.
 
 The TUI also checks once a day in the background and shows a line in the
-startup card (`▸ update v0.5.0 available — ragent --self-update`). The answer is
+startup card (`▸ update v0.6.0 available — ragent --self-update`). The answer is
 cached in `$XDG_DATA_HOME/ragent/update-check`, so at most one request a day;
 disable it with `update_check = false` in `config.toml`,
 `RAGENT_NO_UPDATE_CHECK=1`, or `--no-update-check`.
@@ -64,6 +64,7 @@ export RAGENT_API_KEY=sk-...        # or OPENAI_API_KEY
 ragent                              # TUI
 ragent "fix the bug in src/api.rs"  # headless
 git diff | ragent "review this"     # piped stdin
+ragent --dump-map                   # print the injected repo map, no API call
 ```
 
 From a checkout instead: `cargo build --release`, then use
@@ -95,6 +96,7 @@ stripped; dev = `line-tables-only` debug info; single-thread tokio runtime
 | `edit_file` = exact search/replace, never whole-file rewrites | `tools.rs::edit_file_sync` |
 | Hard caps on all tool output (lines/bytes/hits; truncation tells model how to page) | `tools.rs` consts |
 | Repo map injected once — file tree + symbol outlines, not file contents | `repomap.rs` |
+| Map budget (bytes) spent by file rank: entry points first, `...` for what is cut; every code file keeps a symbol floor | `repomap.rs::build` |
 | Auto-compaction: stale tool outputs → `[elided]`, then middle-history drop with tool-call orphan repair | `ctx.rs::compact` |
 | Stable message prefix for provider prompt caching; cached tokens shown (`⛁`) | `api.rs` |
 | Live $ meter from a price table (overridable in config) | `config.rs`, status bar |
@@ -131,7 +133,12 @@ bash_timeout_ms = 30000
 price_input = 0.15
 price_output = 0.60
 price_cached = 0.003
+use_map = true               # inject the repo map into the system prompt
+map_bytes = 5000             # repo-map budget in bytes (env RAGENT_MAP_BYTES)
 ```
+
+See the map without spending a token: `ragent --dump-map [--map-bytes N]`
+prints exactly what gets injected (`--no-map` / `use_map = false` disables it).
 
 ## TUI
 
@@ -155,8 +162,8 @@ while running · segmented status bar with a `▲ scrolled` indicator.
 
 `read_file` (offset/limit paging) · `edit_file` (atomic multi-edit search/replace) ·
 `write_file` · `bash` (timeout, head+tail truncation) · `grep` (regex, gitignore-aware,
-glob filter) · `glob` · `ls` · `repomap`. File tools are confined to the project root;
-`bash` is your shell.
+glob filter) · `glob` · `ls` · `repomap` (`path` scopes to a subtree, `budget` sizes the
+output). File tools are confined to the project root; `bash` is your shell.
 
 ## Layout
 
@@ -164,7 +171,7 @@ glob filter) · `glob` · `ls` · `repomap`. File tools are confined to the proj
 src/api.rs      OpenAI-compatible SSE client, retries, usage decode
 src/tools.rs    tool schemas + implementations, output caps
 src/ctx.rs      token estimation + two-stage compaction
-src/repomap.rs  repo skeleton builder
+src/repomap.rs  repo skeleton builder: walk, rank, symbol outline, byte budget
 src/agent.rs    run loop, parallel tool dispatch, events
 src/tui.rs      ratatui UI: scrollback, input, status bar
 src/config.rs   config/env/CLI resolution + price table
