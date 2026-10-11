@@ -81,7 +81,14 @@ price_output = 0.60
 price_cached = 0.003
 ```
 
-## TUI keys
+## TUI
+
+Boxed startup card (model/root/context/lifetime stats) · markdown rendering in
+assistant output (headings, fenced code with a `▎` gutter, inline `` `code` `` /
+`**bold**`, bullets, quotes) · `❯`/`●`/`◆` turn markers · braille activity line
+while running · segmented status bar with a `▲ scrolled` indicator.
+
+### TUI keys
 
 - `Enter` send (queues while a run is in flight)
 - `Alt-Enter` / `Shift-Enter`* newline  (*kitty-protocol terminals)

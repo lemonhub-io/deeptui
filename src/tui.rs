@@ -16,7 +16,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Position};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use std::io;
 use std::path::PathBuf;
@@ -33,7 +33,13 @@ const C_TOOL: Style = Style::new().fg(Color::Yellow);
 const C_ERR: Style = Style::new().fg(Color::Red);
 const C_OK: Style = Style::new().fg(Color::Green);
 const C_CODE: Style = Style::new().fg(Color::Gray);
-const C_HEAD: Style = Style::new().add_modifier(Modifier::BOLD);
+const C_HEAD: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+const C_ASSIST: Style = Style::new().fg(Color::Green);
+const C_GUTTER: Style = Style::new().fg(Color::Indexed(240));
+const C_ICODE: Style = Style::new().fg(Color::Yellow);
+const C_BAR: Style = Style::new().bg(Color::Indexed(237)).fg(Color::Gray);
+const C_BAR_HI: Style = Style::new().bg(Color::Indexed(237)).fg(Color::White);
+const SPIN: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 enum UserCmd {
     Prompt(String),
@@ -125,33 +131,37 @@ impl App {
 
     fn push_user(&mut self, text: &str, queued: bool) {
         for (i, l) in text.lines().enumerate() {
-            let pfx = if i == 0 { "> " } else { "  " };
-            let tag = if i == 0 && queued { " (queued)" } else { "" };
-            let mut l2: SLine = vec![(pfx.into(), C_USER)];
-            l2.push((format!("{l}{tag}"), Style::default()));
+            let pfx = if i == 0 { "❯ " } else { "  " };
+            let mut l2: SLine = vec![
+                (
+                    pfx.into(),
+                    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
+                (l.to_string(), C_USER),
+            ];
+            if i == 0 && queued {
+                l2.push((" (queued)".into(), C_DIM));
+            }
             self.log.push(l2);
         }
         self.log.push(Vec::new());
     }
 
     /// Move the streamed assistant text into the scrollback with light
-    /// markdown styling (fenced blocks dimmed, headings bold).
+    /// markdown styling (fenced blocks with a gutter bar, headings,
+    /// inline code/bold, bullets, quotes).
     fn flush_stream(&mut self) {
         if self.stream.is_empty() {
             return;
         }
+        let mut first = true;
         for raw in self.stream.split('\n') {
-            let t = raw.trim_start();
-            if t.starts_with("```") {
-                self.in_fence = !self.in_fence;
-                self.log.push(sline(raw.to_string(), C_CODE));
-            } else if self.in_fence {
-                self.log.push(sline(raw.to_string(), C_CODE));
-            } else if t.starts_with('#') {
-                self.log.push(sline(raw.to_string(), C_HEAD));
-            } else {
-                self.log.push(sline(raw.to_string(), Style::default()));
+            let (mut l, is_content) = md_line(raw, &mut self.in_fence);
+            if first && is_content {
+                mark_line(&mut l);
+                first = false;
             }
+            self.log.push(l);
         }
         self.log.push(Vec::new());
         self.stream.clear();
@@ -174,8 +184,14 @@ impl App {
 
     fn rebuild_stream(&mut self) {
         self.stream_wrapped.clear();
-        for l in self.stream.split('\n') {
-            let sl = sline(l.to_string(), Style::default());
+        let mut fence = self.in_fence;
+        let mut first = true;
+        for raw in self.stream.split('\n') {
+            let (mut sl, is_content) = md_line(raw, &mut fence);
+            if first && is_content {
+                mark_line(&mut sl);
+                first = false;
+            }
             self.stream_wrapped.extend(wrap_sline(&sl, self.wrap_w));
         }
         self.stream_dirty = false;
@@ -253,8 +269,11 @@ fn apply(app: &mut App, ev: AgentEvent, cfg: &Config) {
         AgentEvent::ToolStart { name, args } => {
             app.flush_stream();
             let l: SLine = vec![
-                ("▸ ".into(), C_TOOL),
-                (name, Style::new().add_modifier(Modifier::BOLD)),
+                ("  ◆ ".into(), C_TOOL),
+                (
+                    name,
+                    Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
                 (format!(" {args}"), C_DIM),
             ];
             app.push(l);
@@ -271,7 +290,7 @@ fn apply(app: &mut App, ev: AgentEvent, cfg: &Config) {
                 ("✓", C_OK)
             };
             app.push(vec![
-                ("  └ ".into(), C_DIM),
+                ("    └ ".into(), C_GUTTER),
                 (format!("{mark} {ms}ms"), st),
                 (format!("  {preview}"), C_DIM),
             ]);
@@ -298,6 +317,10 @@ fn apply(app: &mut App, ev: AgentEvent, cfg: &Config) {
         AgentEvent::Done { interrupted } => {
             app.flush_stream();
             app.running = false;
+            let secs = app
+                .started
+                .map(|t| t.elapsed().as_secs_f32())
+                .unwrap_or(0.0);
             app.started = None;
             let ok = !interrupted;
             crate::stats::record(
@@ -310,6 +333,20 @@ fn apply(app: &mut App, ev: AgentEvent, cfg: &Config) {
             );
             if ok {
                 app.ok_cnt += 1;
+                app.push(vec![
+                    ("  ─ ".into(), C_GUTTER),
+                    ("done".into(), C_OK),
+                    (
+                        format!(
+                            " · ${:.4} · ↑{} ↓{} · {:.1}s",
+                            app.task_cost,
+                            fmt_tokens(app.task_in),
+                            fmt_tokens(app.task_out),
+                            secs
+                        ),
+                        C_DIM,
+                    ),
+                ]);
             } else {
                 app.fail_cnt += 1;
                 app.note("— interrupted (Esc)");
@@ -367,6 +404,161 @@ fn cursor_pos(prefix: &str, w: usize) -> (usize, usize) {
     (row, col)
 }
 
+/// Style `code` and **bold** spans inside one markdown line.
+fn md_inline(t: &str) -> SLine {
+    let mut out: SLine = Vec::new();
+    let mut buf = String::new();
+    let (mut bold, mut code) = (false, false);
+    let push = |out: &mut SLine, buf: &mut String, bold, code| {
+        if !buf.is_empty() {
+            let st = if code {
+                C_ICODE
+            } else if bold {
+                Style::new().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            out.push((std::mem::take(buf), st));
+        }
+    };
+    let mut chars = t.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '`' {
+            push(&mut out, &mut buf, bold, code);
+            code = !code;
+        } else if c == '*' && chars.peek() == Some(&'*') {
+            chars.next();
+            push(&mut out, &mut buf, bold, code);
+            bold = !bold;
+        } else {
+            buf.push(c);
+        }
+    }
+    push(&mut out, &mut buf, bold, code);
+    out
+}
+
+/// Place the ● turn marker on a line's leading indent.
+fn mark_line(l: &mut SLine) {
+    if l.first().is_some_and(|(s, _)| s == "  ") {
+        l[0] = ("● ".into(), C_ASSIST);
+    } else {
+        l.insert(0, ("● ".into(), C_ASSIST));
+    }
+}
+
+/// Startup card: name/model/root/budget + lifetime stats + key hints.
+fn banner(app: &mut App, cfg: &Config, root: &std::path::Path) {
+    let life = crate::stats::load();
+    let mut rows: Vec<(String, String)> = vec![
+        ("model".into(), cfg.model.clone()),
+        ("root".into(), root.display().to_string()),
+        (
+            "context".into(),
+            format!("{}k tok", cfg.context_budget / 1000),
+        ),
+    ];
+    if life.tasks > 0 {
+        rows.push((
+            "history".into(),
+            format!(
+                "{} tasks ({}✓ {}✗) · ${:.4} spent · ${:.4}/✓",
+                life.tasks,
+                life.ok,
+                life.tasks - life.ok,
+                life.cost,
+                life.avg_ok().unwrap_or(0.0)
+            ),
+        ));
+    }
+    if cfg.price_in == 0.0 {
+        rows.push((
+            "pricing".into(),
+            "unknown — set price_input/price_output in config.toml".into(),
+        ));
+    }
+    let label_w = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    let inner_w = rows
+        .iter()
+        .map(|(_, v)| label_w + 2 + v.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(30, 74);
+    let title = format!(" ragent {} ", env!("CARGO_PKG_VERSION"));
+    let top_fill = inner_w.saturating_sub(title.chars().count());
+    app.log.push(vec![
+        (" ╭─".into(), C_GUTTER),
+        (
+            title,
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+        (format!("{}╮", "─".repeat(top_fill)), C_GUTTER),
+    ]);
+    for (k, v) in rows {
+        let pad = inner_w.saturating_sub(label_w + 2 + v.chars().count());
+        app.log.push(vec![
+            (" │ ".into(), C_GUTTER),
+            (format!("{k:<label_w$}"), C_DIM),
+            ("  ".into(), Style::default()),
+            (v, Style::default()),
+            (" ".repeat(pad), Style::default()),
+            ("│".into(), C_GUTTER),
+        ]);
+    }
+    app.log
+        .push(sline(format!(" ╰{}╯", "─".repeat(inner_w + 1)), C_GUTTER));
+    app.note("Enter send · Alt-Enter newline · Esc interrupt · ↑ hist · ^C quit");
+    app.log.push(Vec::new());
+}
+
+/// One raw assistant-text line → styled spans (with left indent).
+/// Returns the line and whether it holds visible content (for the ● marker).
+fn md_line(raw: &str, in_fence: &mut bool) -> (SLine, bool) {
+    let t = raw.trim_start();
+    if t.starts_with("```") {
+        *in_fence = !*in_fence;
+        return (
+            vec![("  ▎ ".into(), C_GUTTER), (raw.to_string(), C_DIM)],
+            true,
+        );
+    }
+    if *in_fence {
+        return (
+            vec![("  ▎ ".into(), C_GUTTER), (raw.to_string(), C_CODE)],
+            !t.is_empty(),
+        );
+    }
+    if t.is_empty() {
+        return (Vec::new(), false);
+    }
+    if t.starts_with('#') {
+        let txt = t.trim_start_matches('#').trim_start();
+        return (
+            vec![("  ".into(), Style::default()), (txt.into(), C_HEAD)],
+            true,
+        );
+    }
+    if let Some(rest) = t.strip_prefix('>') {
+        let mut l: SLine = vec![("  ▎ ".into(), C_GUTTER)];
+        let mut inner = md_inline(rest.trim_start());
+        for s in inner.iter_mut() {
+            if s.1 == Style::default() {
+                s.1 = C_DIM;
+            }
+        }
+        l.extend(inner);
+        return (l, true);
+    }
+    if t.starts_with("- ") || t.starts_with("* ") {
+        let mut l: SLine = vec![("  • ".into(), C_DIM)];
+        l.extend(md_inline(&t[2..]));
+        return (l, true);
+    }
+    let mut l: SLine = vec![("  ".into(), Style::default())];
+    l.extend(md_inline(t));
+    (l, true)
+}
+
 fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
     app.ensure_wrap(area.width as usize);
@@ -387,9 +579,28 @@ fn render(f: &mut Frame, app: &mut App) {
     .split(area);
     let (chat, input_a, status) = (chunks[0], chunks[1], chunks[2]);
     let chat_h = chat.height as usize;
+    let elapsed = app
+        .started
+        .map(|t| t.elapsed().as_secs_f32())
+        .unwrap_or(0.0);
+
+    // virtual activity line at the tail while a task runs
+    let spin = SPIN[(elapsed * 8.0) as usize % SPIN.len()];
+    let extra: Vec<SLine> = if app.running {
+        vec![vec![
+            (format!("{spin} "), C_TOOL),
+            (
+                format!("working · step {} · {:.0}s", app.iter, elapsed),
+                C_DIM,
+            ),
+        ]]
+    } else {
+        Vec::new()
+    };
 
     // scroll bookkeeping
-    let total = app.wrapped.len() + app.stream_wrapped.len();
+    let real_total = app.wrapped.len() + app.stream_wrapped.len();
+    let total = real_total + extra.len();
     let max_scroll = total.saturating_sub(chat_h);
     if app.follow {
         app.scroll = max_scroll;
@@ -400,8 +611,10 @@ fn render(f: &mut Frame, app: &mut App) {
     for i in app.scroll..(app.scroll + chat_h).min(total) {
         let src: &SLine = if i < app.wrapped.len() {
             &app.wrapped[i]
-        } else {
+        } else if i < real_total {
             &app.stream_wrapped[i - app.wrapped.len()]
+        } else {
+            &extra[0]
         };
         visible.push(Line::from(
             src.iter()
@@ -420,19 +633,27 @@ fn render(f: &mut Frame, app: &mut App) {
         0
     };
     let title = if app.running {
-        " input — Enter queues · Esc interrupts "
+        " ❯ input — Enter queues · Esc interrupts "
     } else {
-        " input — Enter sends · Alt-Enter newline · Ctrl-C quits "
+        " ❯ input — Enter sends · Alt-Enter newline · Ctrl-C quits "
     };
-    let border = if app.running { C_DIM } else { C_USER };
+    let border = if app.running { C_GUTTER } else { C_USER };
+    let input_txt: &str = if app.input.is_empty() {
+        " ask anything…"
+    } else {
+        app.input.as_str()
+    };
+    let hint = app.input.is_empty();
     f.render_widget(
-        Paragraph::new(app.input.as_str())
+        Paragraph::new(input_txt)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .title(title)
                     .border_style(border),
             )
+            .style(if hint { C_DIM } else { Style::default() })
             .wrap(Wrap { trim: false })
             .scroll((app.input_scroll, 0)),
         input_a,
@@ -442,50 +663,76 @@ fn render(f: &mut Frame, app: &mut App) {
         (input_a.y + 1 + cur_row as u16).saturating_sub(app.input_scroll),
     ));
 
-    // status bar
-    let elapsed = app
-        .started
-        .map(|t| t.elapsed().as_secs_f32())
-        .unwrap_or(0.0);
-    let state = if app.running {
-        format!("running step {} · {:.0}s", app.iter, elapsed)
+    // status bar: left segments · right model/scroll hint
+    let (mark, mark_st) = if app.running {
+        (spin.to_string(), C_TOOL.bg(Color::Indexed(237)))
     } else {
-        "idle".into()
+        ("●".into(), C_OK.bg(Color::Indexed(237)))
     };
-    let mut left = format!(
-        " {} · {} · ↑{} ↓{} ⛁{} · task ${:.4}",
-        env!("CARGO_PKG_NAME"),
-        state,
-        fmt_tokens(app.in_tok),
-        fmt_tokens(app.out_tok),
-        fmt_tokens(app.cached),
-        app.task_cost
-    );
-    if app.ok_cnt + app.fail_cnt > 0 {
-        left.push_str(&format!(
-            " · sess ${:.4} ({}✓ {}✗ · ${:.4}/✓)",
-            app.cost,
-            app.ok_cnt,
-            app.fail_cnt,
-            if app.ok_cnt > 0 {
-                app.cost / app.ok_cnt as f64
+    let sep = || (" │ ".to_string(), C_GUTTER.bg(Color::Indexed(237)));
+    let mut left: Vec<(String, Style)> = vec![
+        (" ".into(), C_BAR),
+        (mark, mark_st),
+        (" ".into(), C_BAR),
+        (
+            if app.running {
+                format!("step {} · {:.0}s", app.iter, elapsed)
             } else {
-                0.0
-            }
+                "idle".into()
+            },
+            C_BAR_HI,
+        ),
+        sep(),
+        (
+            format!(
+                "↑{} ↓{} ⛁{}",
+                fmt_tokens(app.in_tok),
+                fmt_tokens(app.out_tok),
+                fmt_tokens(app.cached)
+            ),
+            C_BAR,
+        ),
+        sep(),
+        (format!("task ${:.4}", app.task_cost), C_BAR_HI),
+    ];
+    if app.ok_cnt + app.fail_cnt > 0 {
+        left.push(sep());
+        left.push((
+            format!(
+                "sess ${:.4} · {}✓ {}✗ · ${:.4}/✓",
+                app.cost,
+                app.ok_cnt,
+                app.fail_cnt,
+                if app.ok_cnt > 0 {
+                    app.cost / app.ok_cnt as f64
+                } else {
+                    0.0
+                }
+            ),
+            C_BAR,
         ));
     }
-    left.push_str(&format!(" · {}", app.model));
-    let mut st: SLine = vec![(left, Style::new().fg(Color::Black).bg(Color::White))];
-    st.push((" ".into(), Style::new().bg(Color::White)));
+    let mut right_txt = format!("{} ", app.model);
+    if !app.follow {
+        right_txt = format!("▲ scrolled · {} ", app.model);
+    }
+    let right_w = right_txt.chars().count() as u16;
+    let bars = Layout::horizontal([Constraint::Min(0), Constraint::Length(right_w)]).split(status);
     f.render_widget(
         Paragraph::new(Line::from(
-            st.iter()
+            left.iter()
                 .map(|(s, x)| Span::styled(s.as_str(), *x))
                 .collect::<Vec<Span>>(),
         ))
-        .style(Style::new().bg(Color::White)),
-        status,
+        .style(C_BAR),
+        bars[0],
     );
+    let right_st = if app.follow {
+        C_BAR
+    } else {
+        Style::new().bg(Color::Indexed(237)).fg(Color::Yellow)
+    };
+    f.render_widget(Paragraph::new(right_txt).style(right_st), bars[1]);
 }
 
 fn prev_char(s: &str, i: usize) -> (usize, char) {
@@ -686,29 +933,7 @@ async fn run_ui(term: &mut Terminal<CrosstermBackend<io::Stdout>>, cfg: Config) 
 
     let mut app = App::new();
     app.model = cfg.model.clone();
-    app.note(format!(
-        "ragent · {} · {} · budget {}k tok",
-        cfg.model,
-        root.display(),
-        cfg.context_budget / 1000
-    ));
-    if cfg.price_in == 0.0 {
-        app.note(
-            "unknown model pricing — cost shown as $0; set price_input/price_output in config.toml",
-        );
-    }
-    let life = crate::stats::load();
-    if life.tasks > 0 {
-        app.note(format!(
-            "lifetime: {} tasks ({}✓ {}✗) · ${:.4} spent · ${:.4}/✓",
-            life.tasks,
-            life.ok,
-            life.tasks - life.ok,
-            life.cost,
-            life.avg_ok().unwrap_or(0.0)
-        ));
-    }
-    app.log.push(Vec::new());
+    banner(&mut app, &cfg, &root);
 
     let mut keys = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(300));
@@ -759,5 +984,130 @@ async fn run_ui(term: &mut Terminal<CrosstermBackend<io::Stdout>>, cfg: Config) 
         if app.quit {
             return Ok(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use ratatui::backend::TestBackend;
+
+    fn cfg() -> Config {
+        Config {
+            api_key: String::new(),
+            base_url: String::new(),
+            model: "test-model".into(),
+            context_budget: 64_000,
+            max_output_tokens: 4096,
+            max_iters: 8,
+            bash_timeout_ms: 60_000,
+            price_in: 0.15,
+            price_out: 0.6,
+            price_cached: 0.003,
+            ds_peak: false,
+            use_map: true,
+        }
+    }
+
+    fn screen(buf: &ratatui::buffer::Buffer, w: u16, h: u16) -> String {
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn inline_code_and_bold() {
+        let l = md_inline("a `x` b **y** c");
+        let texts: Vec<&str> = l.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(texts, ["a ", "x", " b ", "y", " c"]);
+        assert_eq!(l[1].1, C_ICODE);
+        assert!(l[3].1.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn line_fence_heading_bullet() {
+        let mut fence = false;
+        let (l, c) = md_line("```rust", &mut fence);
+        assert!(fence && c && l[0].0 == "  ▎ ");
+        let (l, _) = md_line("fn main() {}", &mut fence);
+        assert_eq!(l[0].0, "  ▎ ");
+        assert_eq!(l[1].1, C_CODE);
+        md_line("```", &mut fence);
+        assert!(!fence);
+        let (l, c) = md_line("# Title", &mut fence);
+        assert!(c && l[1].1 == C_HEAD && l[1].0 == "Title");
+        let (l, _) = md_line("- item", &mut fence);
+        assert_eq!(l[0].0, "  • ");
+    }
+
+    #[test]
+    fn marker_swaps_leading_indent() {
+        let mut fence = false;
+        let (mut l, _) = md_line("hello", &mut fence);
+        mark_line(&mut l);
+        assert_eq!(l[0].0, "● ");
+        let (mut l, _) = md_line("```python", &mut fence);
+        mark_line(&mut l);
+        assert_eq!(l[0].0, "● ");
+        assert_eq!(l[1].0, "  ▎ ");
+    }
+
+    #[test]
+    fn frame_renders_banner_chat_input_status() {
+        let mut app = App::new();
+        app.model = "test-model".into();
+        banner(&mut app, &cfg(), std::path::Path::new("/tmp/x"));
+        app.push_user("hello", false);
+        app.stream = "answer `42`\n\n- a point".into();
+        app.flush_stream();
+        app.push(vec![
+            ("  ◆ ".into(), C_TOOL),
+            (
+                "read_file".into(),
+                Style::new().add_modifier(Modifier::BOLD),
+            ),
+            (" src/main.rs".into(), C_DIM),
+        ]);
+        app.push(vec![
+            ("    └ ".into(), C_GUTTER),
+            ("✓ 4ms".into(), C_OK),
+            ("  head".into(), C_DIM),
+        ]);
+
+        let backend = TestBackend::new(70, 22);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| render(f, &mut app)).unwrap();
+        let s = screen(term.backend().buffer(), 70, 22);
+
+        assert!(s.contains("ragent 0.1.0"), "banner title:\n{s}");
+        assert!(s.contains("test-model"), "model row:\n{s}");
+        assert!(s.contains("❯ hello"), "user marker:\n{s}");
+        assert!(s.contains("● answer"), "assist marker:\n{s}");
+        assert!(s.contains("• a point"), "bullet:\n{s}");
+        assert!(s.contains("◆ read_file"), "tool line:\n{s}");
+        assert!(s.contains("└ ✓ 4ms"), "tool end:\n{s}");
+        assert!(s.contains("idle"), "status:\n{s}");
+        assert!(s.contains("ask anything"), "placeholder:\n{s}");
+    }
+
+    #[test]
+    fn frame_running_shows_spinner_and_state() {
+        let mut app = App::new();
+        app.running = true;
+        app.iter = 3;
+        app.started = Some(Instant::now());
+        let backend = TestBackend::new(60, 15);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| render(f, &mut app)).unwrap();
+        let s = screen(term.backend().buffer(), 60, 15);
+        assert!(s.contains("working · step 3"), "activity line:\n{s}");
+        assert!(s.contains("step 3"), "status step:\n{s}");
+        assert!(s.contains("Enter queues"), "running title:\n{s}");
     }
 }
