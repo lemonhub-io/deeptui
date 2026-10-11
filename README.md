@@ -17,9 +17,21 @@ git diff | ./target/release/ragent "review this"      # piped stdin
 ```
 
 **Build note (Linux):** `.cargo/config.toml` links with [mold](https://github.com/rui314/mold)
-(`apt install mold`) — ~4.7x faster rebuild-relink locally (12s vs 57s for the
+(`apt install mold`) — ~5x faster rebuild-relink locally (11s vs 57s for the
 dev profile). On macOS/Windows the config is a no-op; on a mold-less Linux
 box, comment out the `[target.*]` sections.
+
+x86_64 Linux builds target `x86-64-v3` (AVX2/BMI2/FMA — Intel Haswell 2013+ /
+AMD Excavator 2015+). For older CPUs lower it in `.cargo/config.toml`; for a
+fully local-tuned binary:
+
+```sh
+RUSTFLAGS="-C target-cpu=native -C link-arg=-fuse-ld=mold" cargo build --release
+```
+
+Other speed levers: release = thin LTO + `codegen-units=1` + `panic=abort` +
+stripped; dev = `line-tables-only` debug info; single-thread tokio runtime
+(tool calls are IO-bound concurrency, not CPU parallelism).
 
 ## Cost levers
 

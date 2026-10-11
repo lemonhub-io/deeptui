@@ -1,9 +1,9 @@
 use crate::config::Config;
 use crate::types::Msg;
 use anyhow::{bail, Context, Result};
-use futures::StreamExt;
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 /// Events decoded from the SSE stream.

@@ -1,13 +1,18 @@
 # mold — ~5-10x faster linking than GNU ld for this binary.
 # Requires `mold` installed (apt install mold). On systems without it,
 # comment out the rustflags/linker lines below.
+#
+# target-cpu=x86-64-v3 — enables AVX2/BMI2/FMA (Intel Haswell 2013+ /
+# AMD Excavator 2015+). For older CPUs, drop to x86-64-v2 or remove.
+# For a fully local-tuned binary:
+#   RUSTFLAGS="-C target-cpu=native -C link-arg=-fuse-ld=mold" cargo build --release
 [target.x86_64-unknown-linux-gnu]
 linker = "gcc"
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+rustflags = ["-C", "link-arg=-fuse-ld=mold", "-C", "target-cpu=x86-64-v3"]
 
 [target.x86_64-unknown-linux-musl]
 linker = "gcc"
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+rustflags = ["-C", "link-arg=-fuse-ld=mold", "-C", "target-cpu=x86-64-v3"]
 
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
