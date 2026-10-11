@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn sse_splits_events() {
         let mut s = Sse::default();
-        assert!(s.feed(b"data: {\"a\":1}\n\nda").is_empty() == false);
+        assert!(!s.feed(b"data: {\"a\":1}\n\nda").is_empty());
         let rest = s.feed(b"ta: {\"b\":2}\n\n");
         assert_eq!(rest.len(), 1);
     }
