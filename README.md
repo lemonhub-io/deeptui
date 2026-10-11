@@ -8,13 +8,44 @@ In a controlled benchmark against Codex CLI, Grok CLI, and Pi — same model
 8/8 tasks at **$0.0011 per successful task**, ~3–62× cheaper and ~2–18× faster
 than the others. See [REPORT.md](REPORT.md).
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/lemonhub-io/ragent/master/install.sh | bash
 ```
-cargo build --release
+
+`install.sh` detects the OS/CPU, downloads the matching release asset
+(`ragent-vX.Y.Z-<target>.tar.gz`), verifies its SHA-256 against the release's
+`SHA256SUMS.txt`, smoke-tests it, then installs atomically — an interrupted or
+failed download never replaces a working binary. It installs to `~/.local/bin`
+(`/usr/local/bin` as root, no sudo needed otherwise).
+
+```sh
+install.sh --tag v0.3.0          # pin a release
+install.sh --from-source         # build with cargo (no prebuilt / exotic CPU)
+install.sh --prefix /usr/local   # custom prefix (--bin-dir DIR for the exact dir)
+install.sh --modify-path         # append the install dir to your shell rc
+install.sh --no-verify           # skip the checksum (not recommended)
+install.sh --uninstall           # remove the binary (keeps config + stats)
+install.sh --help                # all options
+```
+
+Prebuilt targets: Linux x86_64 (static musl) and aarch64, macOS x86_64/arm64,
+Windows x86_64 (`.zip`; on Windows the script prints the asset to grab).
+Anything else, or an x86 CPU without AVX2, falls back to `--from-source`.
+Environment overrides: `RAGENT_VERSION`, `RAGENT_INSTALL_DIR`.
+
+## Quickstart
+
+```sh
 export RAGENT_API_KEY=sk-...        # or OPENAI_API_KEY
-./target/release/ragent             # TUI
-./target/release/ragent "fix the bug in src/api.rs"   # headless
-git diff | ./target/release/ragent "review this"      # piped stdin
+ragent                              # TUI
+ragent "fix the bug in src/api.rs"  # headless
+git diff | ragent "review this"     # piped stdin
 ```
+
+From a checkout instead: `cargo build --release`, then use
+`./target/release/ragent` in place of `ragent` above.
 
 **Build note (Linux):** `.cargo/config.toml` links with [mold](https://github.com/rui314/mold)
 (`apt install mold`) — ~5x faster rebuild-relink locally (11s vs 57s for the
@@ -123,7 +154,8 @@ bench/          benchmark harness, fixtures, and raw data (see REPORT.md)
 ## Metrics
 
 Every run appends `ts model in out cached cost ok|fail` to
-`~/.local/share/ragent/stats.tsv`. Headless prints `[task ok] $x · ↑in ↓out
+`~/.local/share/ragent/stats.tsv` (override the path with `RAGENT_STATS_FILE`;
+never written by the unit tests). Headless prints `[task ok] $x · ↑in ↓out
 ⛁cached · life $avg/✓`; the TUI status bar shows `task $x` and session
 `$/✓` live.
 

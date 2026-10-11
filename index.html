@@ -762,7 +762,10 @@ deepseek-flash │ 60k ctx │ task <span style="color:#7ee787">$0.0002</span> �
       <div data-reveal>
         <div class="code">
           <button class="copy" data-copy>Copy</button>
-          <pre><span class="c"># build</span>
+          <pre><span class="c"># install — one line, sha256-verified (Linux &amp; macOS)</span>
+curl -fsSL https://raw.githubusercontent.com/lemonhub-io/ragent/master/install.sh | bash
+
+<span class="c"># …or build from source</span>
 cargo build --release
 
 <span class="c"># configure</span>
@@ -770,9 +773,9 @@ cargo build --release
 ragent --init                <span class="c"># write a commented example</span>
 
 <span class="c"># run</span>
-./target/release/ragent                 <span class="c"># TUI</span>
-./target/release/ragent <span class="s">"fix the bug in src/api.rs"</span>
-git diff | ./target/release/ragent <span class="s">"review this"</span>   <span class="c"># piped stdin</span></pre>
+ragent                                 <span class="c"># TUI</span>
+ragent <span class="s">"fix the bug in src/api.rs"</span>   <span class="c"># headless</span>
+git diff | ragent <span class="s">"review this"</span>       <span class="c"># piped stdin</span></pre>
         </div>
       </div>
 
