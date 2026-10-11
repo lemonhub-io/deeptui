@@ -58,7 +58,7 @@ stripped; dev = `line-tables-only` debug info; single-thread tokio runtime
 | Blocking file ops run in `spawn_blocking`; `ignore` crate walks respect `.gitignore` and skip `target`/`node_modules`/etc. | `tools.rs`, `repomap.rs` |
 | No tokenizer dependency — a 1-division char heuristic estimates tokens in O(n) with zero load time | `util.rs::est_tokens` |
 | Incremental scrollback wrap cache; only new lines rewrap, only visible lines materialize per frame | `tui.rs` |
-| tokio multi-thread runtime, `thin` LTO, `codegen-units=1`, stripped | `Cargo.toml` |
+| tokio `current_thread` runtime, `thin` LTO, `codegen-units=1`, stripped | `Cargo.toml` |
 
 ## Config
 
