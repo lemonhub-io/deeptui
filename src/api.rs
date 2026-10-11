@@ -218,6 +218,57 @@ pub async fn stream_chat(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::{sse, Stub};
+
+    /// A config + client aimed at a [`Stub`].
+    fn cfg_for(stub: &Stub) -> (Config, reqwest::Client) {
+        let cfg = Config {
+            api_key: "test-key".into(),
+            base_url: stub.base_url(),
+            model: "test-model".into(),
+            context_budget: 60_000,
+            max_output_tokens: 64,
+            bash_timeout_ms: 5_000,
+            price_in: 0.1,
+            price_out: 0.2,
+            price_cached: 0.01,
+            ds_peak: false,
+            use_map: false,
+        };
+        (cfg, reqwest::Client::builder().build().unwrap())
+    }
+
+    /// Compact rendering of one event, for order-sensitive assertions.
+    fn fmt_ev(e: &Ev) -> String {
+        match e {
+            Ev::Text(t) => format!("text:{t}"),
+            Ev::TcDelta {
+                idx,
+                id,
+                name,
+                args,
+            } => format!(
+                "tc:{idx}:{}:{}:{args}",
+                id.clone().unwrap_or_default(),
+                name.clone().unwrap_or_default()
+            ),
+            Ev::Usage {
+                input,
+                output,
+                cached,
+            } => format!("usage:{input}:{output}:{cached}"),
+            Ev::Finish(f) => format!("finish:{f}"),
+        }
+    }
+
+    /// Drain every event the stream sent, in order.
+    async fn drain(mut rx: mpsc::Receiver<Ev>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Some(e) = rx.recv().await {
+            out.push(fmt_ev(&e));
+        }
+        out
+    }
 
     #[test]
     fn parses_text_delta() {
@@ -389,5 +440,104 @@ mod tests {
         // whitespace after `data:` is a single optional space, extra is kept? no: trimmed
         let mut s = Sse::default();
         assert_eq!(s.feed(b"data:   padded\n\n"), vec!["padded".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn stream_chat_sends_a_valid_request_and_forwards_events() {
+        let stub = Stub::new();
+        stub.enqueue(
+            200,
+            sse(&[
+                r#"{"choices":[{"delta":{"content":"hel"},"finish_reason":null}]}"#,
+                r#"{"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}"#,
+                r#"{"usage":{"prompt_tokens":11,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":4}}}"#,
+                "[DONE]",
+            ]),
+        );
+        let (cfg, http) = cfg_for(&stub);
+        let (tx, rx) = mpsc::channel(16);
+        let msgs = vec![Msg::system("sys"), Msg::user("hi")];
+        let tools = vec![serde_json::json!({"type":"function"})];
+        stream_chat(&http, &cfg, &msgs, &tools, tx, CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            drain(rx).await,
+            [
+                "text:hel",
+                "text:lo",
+                "finish:stop",
+                "usage:11:3:4",
+                "finish:done"
+            ]
+        );
+
+        // the request carries the model, tools, streaming flags and the key
+        let req = stub.requests().into_iter().next().expect("no request");
+        let lower = req.to_lowercase();
+        assert!(req.starts_with("POST /v1/chat/completions"), "{req}");
+        assert!(lower.contains("bearer test-key"), "{req}");
+        for needle in [
+            "\"model\":\"test-model\"",
+            "\"stream\":true",
+            "\"include_usage\":true",
+            "\"max_completion_tokens\":64",
+            "\"role\":\"user\"",
+            "\"content\":\"hi\"",
+            "\"tools\":[{\"type\":\"function\"}]",
+        ] {
+            assert!(req.contains(needle), "missing {needle} in {req}");
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_chat_retries_rate_limits_then_succeeds() {
+        let stub = Stub::new();
+        stub.enqueue(429, "slow down");
+        stub.enqueue(
+            200,
+            sse(&[r#"{"choices":[{"delta":{"content":"ok"}}]}"#, "[DONE]"]),
+        );
+        let (cfg, http) = cfg_for(&stub);
+        let (tx, rx) = mpsc::channel(8);
+        stream_chat(&http, &cfg, &[], &[], tx, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(drain(rx).await, ["text:ok", "finish:done"]);
+
+        let reqs = stub.requests();
+        assert_eq!(reqs.len(), 2, "retry must resend, got {reqs:#?}");
+        let body = |r: &String| r.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+        assert_eq!(body(&reqs[0]), body(&reqs[1]));
+    }
+
+    #[tokio::test]
+    async fn stream_chat_fails_fast_on_client_errors() {
+        let stub = Stub::new();
+        stub.enqueue(400, "bad\napi\nkey");
+        let (cfg, http) = cfg_for(&stub);
+        let (tx, _rx) = mpsc::channel(8);
+        let err = stream_chat(&http, &cfg, &[], &[], tx, CancellationToken::new())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("HTTP 400"), "{err}");
+        // the body is flattened to one line so the UI stays readable
+        assert!(err.contains("bad⏎api⏎key"), "{err}");
+        assert_eq!(stub.requests().len(), 1, "4xx must not be retried");
+    }
+
+    #[tokio::test]
+    async fn stream_chat_returns_early_when_already_cancelled() {
+        let stub = Stub::new();
+        let (cfg, http) = cfg_for(&stub);
+        let (tx, _rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        stream_chat(&http, &cfg, &[], &[], tx, cancel)
+            .await
+            .unwrap();
+        assert!(stub.requests().is_empty(), "cancelled turn made a request");
     }
 }

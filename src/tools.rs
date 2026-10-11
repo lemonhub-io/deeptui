@@ -741,4 +741,279 @@ mod tests {
             assert!(!is_parallel(t), "{t}");
         }
     }
+
+    #[tokio::test]
+    async fn bash_runs_in_the_project_root_and_reports_the_exit_code() {
+        let t = TmpDir::new("bash");
+        let root = t.path();
+        let out = bash_run(root, &json!({"cmd": "pwd; echo hi"}), 5_000)
+            .await
+            .unwrap();
+        assert!(out.contains(&root.display().to_string()), "{out}");
+        assert!(out.starts_with("hi") || out.contains("\nhi"), "{out}");
+        assert!(out.ends_with("[exit 0]"), "{out}");
+
+        // a failing command still returns its output, with the real status
+        let out = bash_run(root, &json!({"cmd": "echo boom >&2; exit 7"}), 5_000)
+            .await
+            .unwrap();
+        assert!(out.contains("boom"), "{out}");
+        assert!(out.ends_with("[exit 7]"), "{out}");
+
+        assert_eq!(
+            bash_run(root, &json!({}), 5_000).await.unwrap_err(),
+            "missing cmd"
+        );
+    }
+
+    #[tokio::test]
+    async fn bash_separates_stderr_and_truncates_runaway_output() {
+        let t = TmpDir::new("bash-out");
+        let root = t.path();
+        let out = bash_run(root, &json!({"cmd": "echo out; echo err >&2"}), 5_000)
+            .await
+            .unwrap();
+        // stdout keeps its newline, then the stderr block follows
+        assert_eq!(out, "out\n\n--- stderr ---\nerr\n[exit 0]");
+
+        // a command that prints 6000 lines is byte- and line-capped
+        let out = bash_run(
+            root,
+            &json!({"cmd": "for i in $(seq 1 6000); do echo line$i; done"}),
+            30_000,
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("[bytes truncated]"), "no byte cap");
+        assert!(out.contains("lines elided"), "no line cap");
+        assert!(out.ends_with("[exit 0]"), "the status must survive the cap");
+    }
+
+    #[tokio::test]
+    async fn bash_times_out_and_kills_the_command() {
+        let t = TmpDir::new("bash-timeout");
+        let err = bash_run(
+            t.path(),
+            &json!({"cmd": "echo started; sleep 30", "timeout_ms": 50}),
+            30_000,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "timeout after 50ms");
+    }
+
+    #[tokio::test]
+    async fn exec_dispatches_every_tool_and_rejects_unknown_names() {
+        let t = TmpDir::new("exec");
+        let root = Arc::new(t.path().to_path_buf());
+        let run = |name: &'static str, args: Value| {
+            let root = root.clone();
+            async move { exec(name, &args, root, 5_000).await }
+        };
+
+        run("write_file", json!({"path": "a.txt", "content": "abc"}))
+            .await
+            .unwrap();
+        let out = run("read_file", json!({"path": "a.txt"})).await.unwrap();
+        assert_eq!(out.trim_end(), "   1│abc");
+        let out = run("ls", json!({})).await.unwrap();
+        assert!(out.contains("a.txt (3 B)"), "{out}");
+        let out = run("glob", json!({"pattern": "**/*.txt"})).await.unwrap();
+        assert_eq!(out, "a.txt\n");
+        let out = run("grep", json!({"pattern": "abc"})).await.unwrap();
+        assert!(out.contains("a.txt:1: abc"), "{out}");
+        let out = run("bash", json!({"cmd": "cat a.txt"})).await.unwrap();
+        assert!(out.contains("abc") && out.ends_with("[exit 0]"), "{out}");
+
+        // the skeleton lists code files, and an empty project has none
+        let out = run("repomap", json!({})).await.unwrap();
+        assert_eq!(out, "a.txt\n");
+        t.write("src/lib.rs", "pub fn a() {}\n");
+        let out = run("repomap", json!({})).await.unwrap();
+        assert!(out.contains("src/lib.rs") && out.contains("fn a"), "{out}");
+        let empty = TmpDir::new("exec-empty");
+        let err = exec(
+            "repomap",
+            &json!({}),
+            Arc::new(empty.path().to_path_buf()),
+            5_000,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "empty project");
+
+        assert_eq!(
+            run("nope", json!({})).await.unwrap_err(),
+            "unknown tool: nope"
+        );
+    }
+
+    #[test]
+    fn read_file_stops_at_the_byte_budget_and_flags_huge_files() {
+        let t = TmpDir::new("read-budget");
+        let root = t.path();
+        // many lines: the 96 KB output budget stops the listing early
+        let long: String = (1..=6000)
+            .map(|i| format!("line {i:04} {}\n", "x".repeat(24)))
+            .collect();
+        t.write("many.txt", &long);
+        let out = read_file_sync(root, &json!({"path": "many.txt"})).unwrap();
+        assert!(out.contains("(use offset/limit)"), "{out}");
+        assert!(!out.contains("file truncated"), "{out}");
+        assert!(out.len() < 128 * 1024, "{} bytes", out.len());
+
+        // a file past the 4 MB head cap says so
+        t.write("huge.txt", &"y".repeat(4 * 1024 * 1024 + 16));
+        let out = read_file_sync(root, &json!({"path": "huge.txt"})).unwrap();
+        assert!(
+            out.contains("file truncated: only the first 4 MB shown"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn grep_can_be_scoped_and_skips_binary_files() {
+        let t = TmpDir::new("grep-scope");
+        let root = t.path();
+        t.write("src/a.rs", "needle\n");
+        t.write("other/b.txt", "needle\n");
+        std::fs::write(t.join("src/bin.dat"), b"needle\x00\n").unwrap();
+
+        let out = grep_sync(root, &json!({"pattern": "needle", "path": "src"})).unwrap();
+        assert!(out.contains("src/a.rs:1: needle"), "{out}");
+        assert!(!out.contains("b.txt") && !out.contains("bin.dat"), "{out}");
+
+        let out = grep_sync(root, &json!({"pattern": "needle", "glob": "**/*.txt"})).unwrap();
+        assert_eq!(out, "other/b.txt:1: needle\n");
+    }
+
+    #[test]
+    fn grep_stops_at_the_hit_cap() {
+        let t = TmpDir::new("grep-cap");
+        for i in 0..110 {
+            std::fs::write(t.join(&format!("f{i:03}.txt")), "hit\n").unwrap();
+        }
+        // the default cap is 100 hits
+        let out = grep_sync(t.path(), &json!({"pattern": "hit"})).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 101, "cap not applied");
+        assert_eq!(lines[100], "… stopped at 100 hits");
+        assert!(lines[..100].iter().all(|l| l.ends_with(":1: hit")), "{out}");
+
+        let out = grep_sync(t.path(), &json!({"pattern": "hit", "max": 3})).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 4, "{out}");
+        assert_eq!(lines[3], "… stopped at 3 hits");
+
+        // and a pattern with no hits is an error, not empty output
+        assert_eq!(
+            grep_sync(t.path(), &json!({"pattern": "absent"})).unwrap_err(),
+            "no matches"
+        );
+        // a bad regex names the problem
+        let err = grep_sync(t.path(), &json!({"pattern": "["})).unwrap_err();
+        assert!(err.starts_with("bad regex:"), "{err}");
+    }
+
+    #[test]
+    fn glob_truncates_at_the_entry_cap() {
+        let t = TmpDir::new("glob-cap");
+        for i in 0..GREP_MAX + 5 {
+            std::fs::write(t.join(&format!("f{i:03}.txt")), "").unwrap();
+        }
+        let out = glob_sync(t.path(), &json!({"pattern": "**/*.txt"})).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), GREP_MAX + 1);
+        assert_eq!(lines[GREP_MAX], "…");
+        // the walk order is unspecified, but every entry is a real file
+        assert!(
+            lines[..GREP_MAX]
+                .iter()
+                .all(|l| l.starts_with('f') && l.ends_with(".txt")),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn read_file_clamps_offset_and_limit() {
+        let t = TmpDir::new("read-clamp");
+        t.write("a.txt", "l1\nl2\nl3\n");
+        let root = t.path();
+        assert_eq!(
+            read_file_sync(root, &json!({"path": "a.txt", "offset": 2})).unwrap(),
+            "   2│l2\n   3│l3\n"
+        );
+        // limit 0 becomes 1 line plus a marker
+        assert_eq!(
+            read_file_sync(root, &json!({"path": "a.txt", "limit": 0})).unwrap(),
+            "   1│l1\n… stopped at line 2 of 3 (use offset/limit)\n"
+        );
+        assert_eq!(
+            read_file_sync(root, &json!({"path": "a.txt", "offset": 99})).unwrap_err(),
+            "offset 99 beyond 3 lines"
+        );
+        t.write("empty.txt", "");
+        assert_eq!(
+            read_file_sync(root, &json!({"path": "empty.txt"})).unwrap(),
+            "(empty file)"
+        );
+    }
+
+    #[test]
+    fn ls_truncates_very_large_directories() {
+        let t = TmpDir::new("ls-many");
+        let root = t.path();
+        for i in 0..320 {
+            std::fs::write(t.join(&format!("f{i:03}.txt")), "").unwrap();
+        }
+        let out = ls_sync(root, &json!({})).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), LS_MAX + 1);
+        assert_eq!(lines[0], "f000.txt (0 B)");
+        assert_eq!(lines[LS_MAX], "… +20 more");
+    }
+
+    #[test]
+    fn write_and_edit_handle_empty_and_multi_edit_writes() {
+        let t = TmpDir::new("write-edit");
+        let root = t.path();
+        assert_eq!(
+            write_file_sync(root, &json!({"path": "e.txt", "content": ""})).unwrap(),
+            "wrote e.txt (0 B)"
+        );
+        assert_eq!(std::fs::read_to_string(t.join("e.txt")).unwrap(), "");
+        write_file_sync(root, &json!({"path": "e.txt", "content": "shorter"})).unwrap();
+        assert_eq!(std::fs::read_to_string(t.join("e.txt")).unwrap(), "shorter");
+        assert_eq!(
+            write_file_sync(root, &json!({"path": "e.txt"})).unwrap_err(),
+            "missing content"
+        );
+
+        t.write("f.txt", "one\ntwo\nthree\n");
+        let msg = edit_file_sync(
+            root,
+            &json!({"path": "f.txt", "edits": [
+                {"old": "one", "new": "1"},
+                {"old": "three", "new": "3\n4"}]}),
+        )
+        .unwrap();
+        assert_eq!(msg, "applied 2 edits to f.txt (+3/-2 lines)");
+        assert_eq!(
+            std::fs::read_to_string(t.join("f.txt")).unwrap(),
+            "1\ntwo\n3\n4\n"
+        );
+
+        // missing file / malformed args name the problem
+        let err = edit_file_sync(
+            root,
+            &json!({"path": "gone.txt", "edits": [{"old": "a", "new": "b"}]}),
+        )
+        .unwrap_err();
+        assert!(err.contains("gone.txt"), "{err}");
+        let err = edit_file_sync(root, &json!({"path": "f.txt", "edits": "nope"})).unwrap_err();
+        assert_eq!(err, "edits must be an array");
+        let err =
+            edit_file_sync(root, &json!({"path": "f.txt", "edits": [{"new": "b"}]})).unwrap_err();
+        assert_eq!(err, "edit 0: missing old");
+    }
 }

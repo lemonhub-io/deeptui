@@ -24,6 +24,10 @@ regex = "1"
 dirs = "5"
 tokio-util = { version = "0.7" }
 
+[dev-dependencies]
+# `cargo test` needs a runtime + loopback HTTP for the stub server.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time", "sync", "process"] }
+
 [profile.dev]
 debug = "line-tables-only"
 

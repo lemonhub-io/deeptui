@@ -69,7 +69,105 @@ pub fn system_prompt(root: &std::path::Path, use_map: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::TmpDir;
+    use crate::testutil::{sse, Stub, TmpDir};
+
+    fn cfg_for(stub: &Stub) -> Config {
+        Config {
+            api_key: "test-key".into(),
+            base_url: stub.base_url(),
+            model: "test-model".into(),
+            context_budget: 60_000,
+            max_output_tokens: 64,
+            bash_timeout_ms: 5_000,
+            price_in: 0.1,
+            price_out: 0.2,
+            price_cached: 0.01,
+            ds_peak: false,
+            use_map: false,
+        }
+    }
+
+    /// One-line rendering of an event, so sequences can be compared as Vecs.
+    fn fmt(e: &AgentEvent) -> String {
+        match e {
+            AgentEvent::Round(n) => format!("round:{n}"),
+            AgentEvent::Token(t) => format!("token:{t}"),
+            AgentEvent::ToolStart { name, args } => format!("start:{name}:{args}"),
+            AgentEvent::ToolEnd {
+                name,
+                preview,
+                is_err,
+                ..
+            } => format!(
+                "end:{name}:{}:{preview}",
+                if *is_err { "err" } else { "ok" }
+            ),
+            AgentEvent::Compacted(n) => format!("compacted:{n}"),
+            AgentEvent::Usage {
+                input,
+                output,
+                cached,
+            } => format!("usage:{input}:{output}:{cached}"),
+            AgentEvent::Done { interrupted } => format!("done:{interrupted}"),
+            AgentEvent::Err(e) => format!("err:{e}"),
+        }
+    }
+
+    async fn drain(mut rx: mpsc::Receiver<AgentEvent>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Some(e) = rx.recv().await {
+            out.push(fmt(&e));
+        }
+        out
+    }
+
+    /// A completion whose only tool call is `name` with raw JSON `args`.
+    fn tool_round(id: &str, name: &str, args: &str) -> String {
+        serde_json::json!({
+            "choices": [{
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": id,
+                    "function": {"name": name, "arguments": args},
+                }]},
+                "finish_reason": "tool_calls",
+            }]
+        })
+        .to_string()
+    }
+
+    /// A completion that only emits text.
+    fn text_round(text: &str, finish: &str) -> String {
+        serde_json::json!({
+            "choices": [{"delta": {"content": text}, "finish_reason": finish}]
+        })
+        .to_string()
+    }
+
+    /// A mid-stream text delta (no finish reason yet).
+    fn text_chunk(text: &str) -> String {
+        serde_json::json!({
+            "choices": [{"delta": {"content": text}, "finish_reason": null}]
+        })
+        .to_string()
+    }
+
+    /// Run one turn against `stub` and return the events plus final history.
+    async fn turn(stub: &Stub, root: &std::path::Path, prompt: &str) -> (Vec<String>, Vec<Msg>) {
+        let (tx, rx) = mpsc::channel(128);
+        let mut msgs = vec![Msg::system("sys")];
+        run(
+            prompt.to_string(),
+            &mut msgs,
+            Arc::new(cfg_for(stub)),
+            Arc::new(root.to_path_buf()),
+            reqwest::Client::builder().build().unwrap(),
+            tx,
+            CancellationToken::new(),
+        )
+        .await;
+        (drain(rx).await, msgs)
+    }
 
     #[test]
     fn prompt_names_the_root_and_the_rules() {
@@ -133,6 +231,180 @@ mod tests {
         let body = p.split("## AGENTS.md\n").nth(1).unwrap();
         assert_eq!(body.chars().count(), 4000);
         assert_eq!(body, "x".repeat(4000));
+    }
+
+    #[tokio::test]
+    async fn run_executes_a_tool_then_answers_over_two_rounds() {
+        let t = TmpDir::new("agent-two-rounds");
+        t.write("a.txt", "hello");
+        let stub = Stub::new();
+        stub.enqueue(
+            200,
+            sse(&[
+                &text_chunk("listing"),
+                &tool_round("call_1", "ls", "{}"),
+                r#"{"usage":{"prompt_tokens":11,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":4}}}"#,
+                "[DONE]",
+            ]),
+        );
+        stub.enqueue(200, sse(&[&text_round("all done", "stop"), "[DONE]"]));
+
+        let (evs, msgs) = turn(&stub, t.path(), "do it").await;
+        assert_eq!(
+            evs,
+            [
+                "round:1",
+                "token:listing",
+                "usage:11:3:4",
+                "start:ls:{}",
+                "end:ls:ok:a.txt (5 B)",
+                "round:2",
+                "token:all done",
+                "done:false",
+            ]
+        );
+
+        // history: system, user, assistant+call, tool result, final answer
+        assert_eq!(msgs.len(), 5, "{msgs:#?}");
+        assert_eq!(msgs[1].role, "user");
+        assert_eq!(msgs[1].content.as_deref(), Some("do it"));
+        let calls = msgs[2].tool_calls.as_ref().expect("tool_calls dropped");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            (calls[0].id.as_str(), calls[0].function.name.as_str()),
+            ("call_1", "ls")
+        );
+        assert_eq!(msgs[2].content.as_deref(), Some("listing"));
+        assert_eq!(msgs[3].role, "tool");
+        assert_eq!(msgs[3].tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(msgs[3].content.as_deref(), Some("a.txt (5 B)"));
+        assert_eq!(msgs[4].content.as_deref(), Some("all done"));
+        assert!(msgs[4].tool_calls.is_none());
+
+        // the second request replays the tool result back to the model
+        let reqs = stub.requests();
+        assert_eq!(reqs.len(), 2);
+        assert!(reqs[1].contains("\"role\":\"tool\""), "{}", reqs[1]);
+        assert!(reqs[1].contains("a.txt (5 B)"), "{}", reqs[1]);
+    }
+
+    #[tokio::test]
+    async fn run_feeds_tool_errors_back_and_recovers() {
+        let t = TmpDir::new("agent-tool-err");
+        let stub = Stub::new();
+        stub.enqueue(200, sse(&[&tool_round("call_1", "nope", "{}"), "[DONE]"]));
+        stub.enqueue(200, sse(&[&text_round("sorry", "stop"), "[DONE]"]));
+
+        let (evs, msgs) = turn(&stub, t.path(), "go").await;
+        assert!(
+            evs.contains(&"end:nope:err:error: unknown tool: nope".to_string()),
+            "{evs:?}"
+        );
+        assert_eq!(evs.last().unwrap(), "done:false");
+        assert_eq!(
+            msgs[3].content.as_deref(),
+            Some("error: unknown tool: nope")
+        );
+        assert!(stub.requests()[1].contains("unknown tool: nope"));
+    }
+
+    #[tokio::test]
+    async fn run_runs_a_parallel_batch_in_call_order() {
+        let t = TmpDir::new("agent-parallel");
+        t.write("a.txt", "aaa");
+        t.write("b.txt", "bbb");
+        let stub = Stub::new();
+        let batch = serde_json::json!({
+            "choices": [{
+                "delta": {"tool_calls": [
+                    {"index": 0, "id": "call_a", "function": {
+                        "name": "read_file", "arguments": r#"{"path":"a.txt"}"#}},
+                    {"index": 1, "id": "call_b", "function": {
+                        "name": "read_file", "arguments": r#"{"path":"b.txt"}"#}},
+                ]},
+                "finish_reason": "tool_calls",
+            }]
+        })
+        .to_string();
+        stub.enqueue(200, sse(&[&batch, "[DONE]"]));
+        stub.enqueue(200, sse(&[&text_round("both read", "stop"), "[DONE]"]));
+
+        let (evs, msgs) = turn(&stub, t.path(), "read both").await;
+        assert!(
+            evs.contains(&r#"start:read_file:{"path":"a.txt"}"#.to_string()),
+            "{evs:?}"
+        );
+        assert_eq!(evs.iter().filter(|e| e.starts_with("start:")).count(), 2);
+        assert_eq!(evs.iter().filter(|e| e.starts_with("end:")).count(), 2);
+
+        // every call gets exactly one result, in call order
+        let calls = msgs[2].tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["call_a", "call_b"]
+        );
+        assert_eq!(msgs[3].tool_call_id.as_deref(), Some("call_a"));
+        assert_eq!(msgs[4].tool_call_id.as_deref(), Some("call_b"));
+        assert!(msgs[3].content.as_deref().unwrap().contains("aaa"));
+        assert!(msgs[4].content.as_deref().unwrap().contains("bbb"));
+    }
+
+    #[tokio::test]
+    async fn run_surfaces_mid_stream_api_errors_and_keeps_history_valid() {
+        let t = TmpDir::new("agent-api-err");
+        let stub = Stub::new();
+        stub.enqueue(
+            200,
+            sse(&[r#"{"error":{"message":"rate limited"}}"#, "[DONE]"]),
+        );
+        let (evs, msgs) = turn(&stub, t.path(), "hi").await;
+        assert_eq!(evs, ["round:1", "err:rate limited"]);
+        // nothing was recorded: no empty assistant message, no second request
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(stub.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn run_stops_without_a_request_when_already_cancelled() {
+        let t = TmpDir::new("agent-cancel");
+        let stub = Stub::new();
+        let (tx, rx) = mpsc::channel(64);
+        let mut msgs = vec![Msg::system("sys")];
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        run(
+            "hi".into(),
+            &mut msgs,
+            Arc::new(cfg_for(&stub)),
+            Arc::new(t.path().to_path_buf()),
+            reqwest::Client::builder().build().unwrap(),
+            tx,
+            cancel,
+        )
+        .await;
+        assert_eq!(drain(rx).await, ["round:1", "done:true"]);
+        assert_eq!(msgs.len(), 2);
+        assert!(stub.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_reports_a_length_finish_once() {
+        let t = TmpDir::new("agent-length");
+        let stub = Stub::new();
+        stub.enqueue(200, sse(&[&text_round("truncated", "length"), "[DONE]"]));
+        let (evs, msgs) = turn(&stub, t.path(), "write an essay").await;
+        assert_eq!(
+            evs,
+            [
+                "round:1",
+                "token:truncated",
+                "err:hit max output tokens",
+                "done:false"
+            ]
+        );
+        // the partial answer is kept so the next turn has context
+        assert_eq!(msgs[2].content.as_deref(), Some("truncated"));
     }
 }
 
@@ -215,7 +487,14 @@ pub async fn run(
                             })
                             .await;
                     }
-                    api::Ev::Finish(f) => finish = f,
+                    api::Ev::Finish(f) => {
+                        // "[DONE]" is a transport sentinel, not a reason: it must
+                        // not hide a real finish_reason (or an "api error: …") that
+                        // arrived earlier in the same stream.
+                        if finish.is_empty() || f != "done" {
+                            finish = f;
+                        }
+                    }
                 }
             }
         };

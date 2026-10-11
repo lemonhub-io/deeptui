@@ -867,4 +867,47 @@ mod tests {
         assert!(!fence);
         assert!(out.iter().any(|(l, c)| !*c && text_of(l) == "  ▎ "));
     }
+
+    #[test]
+    fn rule_detection_covers_the_three_marker_styles() {
+        for good in ["---", "- - -", "***", "___"] {
+            assert!(md_is_rule(good), "{good} should be a rule");
+        }
+        // only a repeated *single* marker counts, and never a bullet or a table
+        for bad in ["", "--", "- item", "|-|", "  ---", "text", "*-*"] {
+            assert!(!md_is_rule(bad), "{bad} is not a rule");
+        }
+
+        // a spaced rule still renders as a bar, never as literal markers
+        let mut fence = false;
+        let out = md_block("a\n\n- - -\n\nb", &mut fence, 20);
+        let text: Vec<String> = out.iter().map(|(l, _)| text_of(l)).collect();
+        assert_eq!(text[2], format!("  {}", "─".repeat(16)));
+        assert!(!text.iter().any(|t| t.contains("- -")), "{text:?}");
+    }
+
+    #[test]
+    fn mark_line_reuses_or_inserts_the_assistant_bullet() {
+        // a plain paragraph already starts with its indent span
+        let mut l: SLine = vec![("  ".into(), Style::default()), ("hi".into(), C_CODE)];
+        mark_line(&mut l);
+        assert_eq!(l[0].0, "● ");
+        assert_eq!((l[1].0.as_str(), l[1].1), ("hi", C_CODE));
+        assert_eq!(l[0].1, C_ASSIST);
+
+        // headings and quotes have their own gutter, so the bullet is added
+        let mut l: SLine = vec![("▎ quote".into(), C_GUTTER)];
+        mark_line(&mut l);
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[0].0, "● ");
+        assert_eq!(l[1].0, "▎ quote");
+
+        // a fence gutter (two spaces + bar) is untouched, only prefixed
+        let mut l: SLine = vec![("  ▎ ".into(), C_GUTTER)];
+        mark_line(&mut l);
+        assert_eq!(
+            l.iter().map(|(t, _)| t.as_str()).collect::<String>(),
+            "●   ▎ "
+        );
+    }
 }

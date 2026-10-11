@@ -281,6 +281,36 @@ mod tests {
     }
 
     #[test]
+    fn known_models_get_table_prices_and_peak_flags() {
+        let c = Config::load(
+            Some("deepseek-reasoner"),
+            Some("http://x/v1/"),
+            Some("k"),
+            None,
+            true,
+        )
+        .expect("load with cli flags");
+        assert_eq!(
+            (c.price_in, c.price_out, c.price_cached),
+            (0.28, 0.42, 0.028)
+        );
+        assert!(c.ds_peak, "deepseek models have peak windows");
+        assert!(!c.use_map, "--no-map must win over the config file");
+        // trailing slashes are trimmed so endpoint joins stay tidy
+        assert_eq!(c.base_url, "http://x/v1");
+        assert_eq!(c.model, "deepseek-reasoner");
+    }
+
+    #[test]
+    fn peak_now_agrees_with_the_pure_check() {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before 1970")
+            .as_secs();
+        assert_eq!(deepseek_peak_now(), deepseek_peak_at(secs));
+    }
+
+    #[test]
     fn peak_windows_are_weekday_hours_in_utc() {
         // 1970-01-01 was a Thursday (dow 3)
         assert!(!deepseek_peak_at(0));

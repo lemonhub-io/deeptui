@@ -731,4 +731,109 @@ mod tests {
         apply(&mut app, AgentEvent::Compacted("elided 3".into()), &cfg);
         assert_eq!(text_of(app.log.last().unwrap()), "  ⛁ elided 3");
     }
+
+    #[test]
+    fn err_events_stop_the_run_and_flush_partial_text() {
+        let mut app = App::new();
+        app.running = true;
+        app.stream = "half an answer".into();
+        app.started = Some(std::time::Instant::now());
+        apply(&mut app, AgentEvent::Err("connection reset".into()), &cfg());
+
+        assert!(!app.running);
+        assert!(app.started.is_none());
+        assert_eq!((app.ok_cnt, app.fail_cnt), (0, 1));
+        let txts: Vec<String> = app.log.iter().map(text_of).collect();
+        assert!(txts.iter().any(|t| t == "● half an answer"), "{txts:?}");
+        assert_eq!(txts.last().unwrap(), "✗ connection reset");
+        assert!(app.stream.is_empty() && !app.stream_dirty);
+        assert_eq!(app.log.last().unwrap()[0].1, C_ERR);
+    }
+
+    #[test]
+    fn done_ok_prints_a_summary_and_counts_the_task() {
+        let mut app = App::new();
+        app.running = true;
+        app.started = Some(std::time::Instant::now());
+        app.task_cost = 0.5;
+        app.task_in = 1_000;
+        app.task_out = 250;
+        apply(&mut app, AgentEvent::Done { interrupted: false }, &cfg());
+        assert_eq!((app.ok_cnt, app.fail_cnt), (1, 0));
+        assert!(!app.running);
+        let last = text_of(app.log.last().unwrap());
+        assert!(last.contains("done"), "{last}");
+        assert!(
+            last.contains("$0.5000") && last.contains("↑1.0k ↓250") && last.contains('s'),
+            "{last}"
+        );
+    }
+
+    #[test]
+    fn done_interrupted_notes_the_cancel_instead_of_a_summary() {
+        let mut app = App::new();
+        app.running = true;
+        app.task_cost = 3.0;
+        apply(&mut app, AgentEvent::Done { interrupted: true }, &cfg());
+        assert_eq!((app.ok_cnt, app.fail_cnt), (0, 1));
+        assert!(!app.running);
+        let last = app.log.last().unwrap();
+        assert_eq!(text_of(last), "  — interrupted (Esc)");
+        assert_eq!(last[0].1, C_DIM);
+        // the spend is recorded as a failure, never as a win
+        assert!(!text_of(last).contains("done"));
+    }
+
+    #[tokio::test]
+    async fn driver_runs_a_queued_prompt_after_the_first_turn() {
+        let t = crate::testutil::TmpDir::new("driver");
+        let stub = crate::testutil::Stub::new();
+        for text in ["first answer", "second answer"] {
+            let body = serde_json::json!({
+                "choices": [{"delta": {"content": text}, "finish_reason": "stop"}]
+            })
+            .to_string();
+            stub.enqueue(200, crate::testutil::sse(&[&body, "[DONE]"]));
+        }
+
+        let (ev_tx, mut ev_rx) = mpsc::channel(64);
+        let (in_tx, in_rx) = mpsc::channel(4);
+        let http = reqwest::Client::builder().build().unwrap();
+        let mut c = cfg();
+        c.api_key = "test-key".into();
+        c.base_url = stub.base_url();
+        let task = tokio::spawn(driver(
+            Vec::new(),
+            Arc::new(c),
+            Arc::new(t.path().to_path_buf()),
+            http,
+            ev_tx,
+            in_rx,
+        ));
+
+        in_tx.send(UserCmd::Prompt("p1".into())).await.unwrap();
+        in_tx.send(UserCmd::Prompt("p2".into())).await.unwrap();
+
+        // both prompts must turn into their own request, in order
+        let mut dones = 0;
+        while dones < 2 {
+            let ev = tokio::time::timeout(std::time::Duration::from_secs(10), ev_rx.recv())
+                .await
+                .expect("driver stalled")
+                .expect("driver died");
+            if matches!(ev, AgentEvent::Done { .. }) {
+                dones += 1;
+            }
+        }
+        task.abort();
+
+        let reqs = stub.requests();
+        assert_eq!(reqs.len(), 2, "one request per prompt");
+        assert!(
+            reqs[0].contains("p1") && !reqs[0].contains("p2"),
+            "{}",
+            reqs[0]
+        );
+        assert!(reqs[1].contains("p2"), "{}", reqs[1]);
+    }
 }

@@ -186,6 +186,82 @@ mod tests {
     }
 
     #[test]
+    fn symbol_scan_covers_the_common_languages() {
+        let t = TmpDir::new("map-langs");
+        t.write(
+            "app.py",
+            "import os\nclass A:\n    def method(self):\n        pass\n    async def other(self):\n        pass\nX = 1\n",
+        );
+        t.write(
+            "app.js",
+            "export function two() {}\nconst arrow = () => {};\nclass C {}\nlet loose = 1;\n",
+        );
+        t.write("main.go", "package main\nfunc Go() {}\ntype T struct{}\n");
+        t.write(
+            "lib.rs",
+            "pub(crate) fn hidden() {}\nimpl A {\n    fn m(&self) {}\n}\n",
+        );
+        let map = build(t.path(), 6000);
+        for sym in [
+            "class A:",
+            "def method(self):",
+            "async def other(self):",
+            "export function two() {}",
+            "const arrow = () => {};",
+            "class C {}",
+            "let loose = 1;",
+            "func Go() {}",
+            "type T struct{}",
+            "pub(crate) fn hidden() {}",
+            "impl A {",
+            "fn m(&self) {}",
+        ] {
+            assert!(
+                map.contains(&format!("    {sym}\n")),
+                "missing {sym} in:\n{map}"
+            );
+        }
+        // imports, statements and assignments are not symbols
+        for noise in ["X = 1", "import os", "package main", "        pass"] {
+            assert!(!map.contains(noise), "{noise} leaked into:\n{map}");
+        }
+    }
+
+    #[test]
+    fn over_long_symbol_lines_are_clipped() {
+        let t = TmpDir::new("map-clip");
+        let name = format!("{}{}", "n".repeat(120), "m".repeat(120));
+        t.write("a.rs", &format!("fn {name}() {{}}\n"));
+        let map = build(t.path(), 6000);
+        let line = map
+            .lines()
+            .find(|l| l.starts_with("    fn "))
+            .expect("no symbol");
+        assert_eq!(line.chars().count(), 4 + 110);
+        assert!(!line.contains('m'), "tail kept: {line}");
+    }
+
+    #[test]
+    fn walk_files_respects_gitignore_inside_a_repo() {
+        let t = TmpDir::new("map-git");
+        std::fs::create_dir_all(t.join(".git")).unwrap();
+        t.write(".gitignore", "secret.txt\nignored/\n");
+        t.write("kept.rs", "fn a() {}\n");
+        t.write("secret.txt", "fn hidden() {}\n");
+        t.write("ignored/deep.rs", "fn deeper() {}\n");
+        let rel: Vec<String> = walk_files(t.path(), 100)
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        assert!(rel.contains(&"kept.rs".to_string()), "{rel:?}");
+        assert!(
+            !rel.iter()
+                .any(|p| p.contains("secret") || p.contains("ignored")),
+            "gitignore not honoured: {rel:?}"
+        );
+    }
+
+    #[test]
     fn build_is_empty_for_an_empty_dir() {
         let t = TmpDir::new("map-empty");
         assert_eq!(build(t.path(), 6000), "");

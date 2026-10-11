@@ -470,4 +470,62 @@ mod tests {
         // byte offsets, so multibyte words land on the right boundary
         assert_eq!(word_back("foo 汉字"), 4);
     }
+
+    #[test]
+    fn home_end_and_unhandled_keys_leave_the_line_alone() {
+        let mut a = App::new();
+        let (tx, _rx) = mpsc::channel(4);
+        a.input = "abc".into();
+        a.cur = 1;
+        send(&mut a, KeyCode::End, KeyModifiers::NONE, &tx);
+        assert_eq!(a.cur, 3);
+        send(&mut a, KeyCode::Home, KeyModifiers::NONE, &tx);
+        assert_eq!(a.cur, 0);
+
+        // keys with no binding change nothing and never quit
+        for code in [
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Insert,
+            KeyCode::F(12),
+        ] {
+            assert!(!send(&mut a, code, KeyModifiers::NONE, &tx), "{code:?}");
+        }
+        assert_eq!((a.input.as_str(), a.cur), ("abc", 0));
+
+        // ctrl+k cuts the tail at the cursor
+        send(&mut a, KeyCode::Right, KeyModifiers::NONE, &tx);
+        send(&mut a, KeyCode::Char('k'), KeyModifiers::CONTROL, &tx);
+        assert_eq!((a.input.as_str(), a.cur), ("a", 1));
+
+        // ctrl+w eats the whitespace run before the cursor, like the shell
+        a.input = "   ".into();
+        a.cur = 3;
+        send(&mut a, KeyCode::Char('w'), KeyModifiers::CONTROL, &tx);
+        assert_eq!((a.input.as_str(), a.cur), ("", 0));
+    }
+
+    #[test]
+    fn repeated_enter_keeps_history_and_cursor_in_step() {
+        let mut a = App::new();
+        let (tx, mut rx) = mpsc::channel(8);
+        for p in ["one", "two"] {
+            a.input = p.into();
+            a.cur = p.len();
+            send(&mut a, KeyCode::Enter, KeyModifiers::NONE, &tx);
+        }
+        assert!(matches!(rx.try_recv(), Ok(UserCmd::Prompt(t)) if t == "one"));
+        assert!(matches!(rx.try_recv(), Ok(UserCmd::Prompt(t)) if t == "two"));
+        assert_eq!(a.hist, ["one", "two"]);
+        assert_eq!(a.hi, 2);
+        assert_eq!((a.input.as_str(), a.cur), ("", 0));
+
+        // an edited recall is stored verbatim on the next send
+        send(&mut a, KeyCode::Up, KeyModifiers::NONE, &tx);
+        assert_eq!((a.input.as_str(), a.hi), ("two", 1));
+        send(&mut a, KeyCode::Char('!'), KeyModifiers::NONE, &tx);
+        send(&mut a, KeyCode::Enter, KeyModifiers::NONE, &tx);
+        assert!(matches!(rx.try_recv(), Ok(UserCmd::Prompt(t)) if t == "two!"));
+        assert_eq!(a.hist, ["one", "two", "two!"]);
+    }
 }

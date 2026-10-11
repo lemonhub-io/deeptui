@@ -315,6 +315,46 @@ mod tests {
     }
 
     #[test]
+    fn compact_leaves_the_recent_tail_untouched() {
+        let mut msgs = vec![Msg::system("s")];
+        for i in 0..20 {
+            msgs.push(Msg::assistant(None, vec![tc(&format!("c{i}"))]));
+            msgs.push(Msg::tool(format!("c{i}"), "x".repeat(300)));
+        }
+        let before = total_tokens(&msgs);
+        let tail: Vec<Option<String>> = msgs[msgs.len() - 8..]
+            .iter()
+            .map(|m| m.content.clone())
+            .collect();
+        let note = compact(&mut msgs, before - 1).unwrap();
+        assert!(note.contains("elided"), "{note}");
+        // the newest 8 messages (and their outputs) are never elided
+        for (m, want) in msgs[msgs.len() - 8..].iter().zip(tail.iter()) {
+            assert_eq!(&m.content, want, "recent message was rewritten");
+            assert_eq!(m.orig_len, 0);
+        }
+        // ...but the older ones were
+        assert!(msgs[..msgs.len() - 8].iter().any(|m| m.orig_len > 240));
+    }
+
+    #[test]
+    fn compact_reports_stage_one_when_dropping_is_impossible() {
+        // over the 90% threshold, yet too short to truncate (head 2 + tail 12)
+        let mut msgs = vec![Msg::system("s".repeat(4000))];
+        for i in 0..4 {
+            msgs.push(Msg::assistant(None, vec![tc(&format!("c{i}"))]));
+            msgs.push(Msg::tool(format!("c{i}"), "y".repeat(400)));
+        }
+        assert_eq!(msgs.len(), 9);
+        let before = total_tokens(&msgs);
+        let note = compact(&mut msgs, 100).unwrap();
+        assert_eq!(note, "compacted: elided 0 tool outputs");
+        // nothing was dropped and nothing was elided (all outputs are recent)
+        assert_eq!(msgs.len(), 9);
+        assert_eq!(total_tokens(&msgs), before);
+    }
+
+    #[test]
     fn elides_old_tool_outputs() {
         let mut msgs = vec![Msg::system("s")];
         for i in 0..20 {

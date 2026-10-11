@@ -337,6 +337,55 @@ mod tests {
         assert!(s.contains("step 3"), "status step:\n{s}");
         assert!(s.contains("Enter queues"), "running title:\n{s}");
     }
+
+    #[test]
+    fn scrolling_back_drops_the_tail_and_flags_the_status() {
+        let mut app = App::new();
+        app.model = "test-model".into();
+        for i in 1..=40 {
+            app.push_user(&format!("PROMPT{i}"), false);
+        }
+        let backend = TestBackend::new(50, 12);
+        let mut term = Terminal::new(backend).unwrap();
+
+        // follow mode pins the newest line to the bottom
+        term.draw(|f| render(f, &mut app)).unwrap();
+        let mut s = screen(term.backend().buffer(), 50, 12);
+        assert!(s.contains("PROMPT40"), "tail missing:\n{s}");
+        assert!(!s.contains("▲ scrolled"), "follow mode is not scrolled");
+
+        // scrolled back: the first prompt is visible and the tail is gone
+        app.follow = false;
+        app.scroll = 0;
+        term.draw(|f| render(f, &mut app)).unwrap();
+        s = screen(term.backend().buffer(), 50, 12);
+        assert!(
+            s.contains("PROMPT1 ") || s.contains("PROMPT1\n"),
+            "head:\n{s}"
+        );
+        assert!(!s.contains("PROMPT40"), "tail should be off-screen:\n{s}");
+        assert!(s.contains("▲ scrolled · test-model"), "status hint:\n{s}");
+    }
+
+    #[test]
+    fn a_tall_input_box_scrolls_to_keep_the_cursor_line_visible() {
+        let mut app = App::new();
+        app.model = "m".into();
+        app.input = "AAA\nBBB\nCCC\nDDD\nEEE\nFFF".into();
+        app.cur = app.input.len();
+        let backend = TestBackend::new(40, 10);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| render(f, &mut app)).unwrap();
+        let s = screen(term.backend().buffer(), 40, 10);
+
+        assert!(s.contains("FFF"), "cursor line must stay visible:\n{s}");
+        assert!(!s.contains("AAA"), "older input lines scroll away:\n{s}");
+        assert!(
+            app.input_scroll > 0,
+            "input scroll not tracked: {}",
+            app.input_scroll
+        );
+    }
     #[test]
     fn flushed_content_does_not_overscroll() {
         // the phantom stream line used to add +1 to the scroll total, pushing
