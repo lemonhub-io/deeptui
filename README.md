@@ -16,6 +16,11 @@ export RAGENT_API_KEY=sk-...        # or OPENAI_API_KEY
 git diff | ./target/release/ragent "review this"      # piped stdin
 ```
 
+**Build note (Linux):** `.cargo/config.toml` links with [mold](https://github.com/rui314/mold)
+(`apt install mold`) — ~4.7x faster rebuild-relink locally (12s vs 57s for the
+dev profile). On macOS/Windows the config is a no-op; on a mold-less Linux
+box, comment out the `[target.*]` sections.
+
 ## Cost levers
 
 | Lever | Where |

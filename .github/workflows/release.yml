@@ -40,15 +40,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: install musl toolchain
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: install mold + musl toolchain
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y mold musl-tools
       - name: install cross toolchain (aarch64-linux)
         if: matrix.linker
-        run: |
-          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-          mkdir -p ~/.cargo
-          printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\n' >> ~/.cargo/config.toml
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
       - name: build
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: package
