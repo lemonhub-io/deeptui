@@ -1,6 +1,6 @@
 [package]
 name = "ragent"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Lean Rust coding agent: extreme cost & speed optimization"
 license = "Apache-2.0"

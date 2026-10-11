@@ -86,18 +86,26 @@ jobs:
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: write release notes
         run: |
-          cat > notes.md <<'EOF'
-          ## ragent v0.1.0
+          cat > notes.md <<EOF
+          ## ragent ${{ github.ref_name }}
 
           Lean Rust coding agent — extreme cost & speed optimization.
 
-          - 8/8 tasks in the horizontal eval at ~$0.0011 per successful task (see REPORT.md)
+          - 8/8 tasks in the horizontal eval at ~\$0.0011 per successful task (see REPORT.md)
           - ~5.6 MB binary, ~5 ms startup, ~4 MB RSS
           - OpenAI-compatible: DeepSeek, OpenAI, OpenRouter, Ollama, vLLM, LM Studio
           - ratatui TUI + scriptable headless mode
 
-          Binaries: linux (gnu + static musl), linux-aarch64, macOS x86_64/aarch64, Windows x86_64.
-          Verify: `sha256sum -c SHA256SUMS.txt`
+          ### Install
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/install.sh | bash
+          \`\`\`
+
+          Binaries: linux x86_64 (gnu + static musl), linux-aarch64, macOS
+          x86_64/aarch64, Windows x86_64. The installer picks the right one for
+          your platform and verifies it against \`SHA256SUMS.txt\`.
+          Verify manually with: \`sha256sum -c SHA256SUMS.txt\`
           EOF
       - name: release
         env:
