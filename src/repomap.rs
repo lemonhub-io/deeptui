@@ -29,10 +29,12 @@ const CODE_EXTS: &[&str] = &[
 fn symbol_re() -> &'static Regex {
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
-            r"^\s*(?:pub(?:\([^)]*\))?\s+|export\s+(?:default\s+)?|async\s+|static\s+|def\s+|public\s+|private\s+|protected\s+)*\
-             (?:fn|struct|enum|impl|trait|class|interface|type|func|module|mod|namespace|const|let|def|function)\b[^\n]{0,100}",
-        )
+        // NB: a trailing `\` inside a raw string is a literal backslash, not
+        // a line continuation — `concat!` is what joins these two halves.
+        Regex::new(concat!(
+            r"^\s*(?:pub(?:\([^)]*\))?\s+|export\s+(?:default\s+)?|async\s+|static\s+|def\s+|public\s+|private\s+|protected\s+)*",
+            r"(?:fn|struct|enum|impl|trait|class|interface|type|func|module|mod|namespace|const|let|def|function)\b[^\n]{0,100}",
+        ))
         .unwrap()
     })
 }
@@ -115,4 +117,97 @@ pub fn build(root: &Path, max_bytes: usize) -> String {
     }
     out.truncate(max_bytes + 4000);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::TmpDir;
+
+    #[test]
+    fn walk_files_is_sorted_and_skips_vendor_dirs() {
+        let t = TmpDir::new("walk");
+        t.write("b.py", "");
+        t.write("a.rs", "");
+        t.write("node_modules/dep/index.js", "");
+        t.write("target/debug/build", "");
+        t.write("src/deep/c.rs", "");
+        let files = walk_files(t.path(), 100);
+        let rel: Vec<String> = files.iter().map(|p| p.display().to_string()).collect();
+        assert_eq!(rel, ["a.rs", "b.py", "src/deep/c.rs"]);
+    }
+
+    #[test]
+    fn walk_files_honours_the_cap() {
+        let t = TmpDir::new("walk-cap");
+        for i in 0..10 {
+            t.write(&format!("f{i}.rs"), "");
+        }
+        assert_eq!(walk_files(t.path(), 4).len(), 4);
+        // the cap is checked after each push, so 0 still yields the first file
+        assert_eq!(walk_files(t.path(), 0).len(), 1);
+    }
+
+    #[test]
+    fn build_lists_paths_and_symbols_for_code_only() {
+        let t = TmpDir::new("map");
+        t.write(
+            "src/main.rs",
+            "use x;\npub fn one() {}\n\nstruct Two;\n    impl Two {}\nfn hidden() {}\n",
+        );
+        t.write("README.md", "function not_code() {}\n");
+        let map = build(t.path(), 6000);
+        assert!(map.starts_with("README.md\nsrc/main.rs\n"), "{map}");
+        // every symbol line from the .rs file is indented under its path
+        for sym in [
+            "pub fn one() {}",
+            "struct Two;",
+            "impl Two {}",
+            "fn hidden() {}",
+        ] {
+            assert!(
+                map.contains(&format!("    {sym}\n")),
+                "missing {sym} in {map}"
+            );
+        }
+        // non-code extensions contribute no symbols
+        assert!(!map.contains("not_code"), "{map}");
+    }
+
+    #[test]
+    fn build_stops_at_25_symbols_per_file_and_marks_the_rest() {
+        let t = TmpDir::new("map-cap");
+        let body: String = (0..30).map(|i| format!("fn f{i}() {{}}\n")).collect();
+        t.write("many.rs", &body);
+        let map = build(t.path(), 6000);
+        assert_eq!(map.matches("    fn f").count(), 25);
+        assert!(map.contains("    ...\n"), "{map}");
+        assert!(!map.contains("fn f29"), "{map}");
+    }
+
+    #[test]
+    fn build_is_empty_for_an_empty_dir() {
+        let t = TmpDir::new("map-empty");
+        assert_eq!(build(t.path(), 6000), "");
+    }
+
+    #[test]
+    fn build_stops_listing_once_the_byte_budget_is_spent() {
+        let t = TmpDir::new("map-bytes");
+        let stem = "x".repeat(120);
+        for i in 0..60 {
+            t.write(&format!("some/deeply/nested/path/{stem}_{i}.rs"), "");
+        }
+        let map = build(t.path(), 300);
+        assert!(!map.is_empty());
+        // paths flush past the budget in one go, but never by more than 4 KiB
+        assert!(map.len() <= 300 + 4000, "{} bytes", map.len());
+        // the full listing would be ~9.7 KiB, so it must be cut short
+        let full: usize = (0..60)
+            .map(|i| format!("some/deeply/nested/path/{stem}_{i}.rs\n").len())
+            .sum();
+        assert!(full > 9000, "{full}");
+        assert!(map.len() < full);
+        assert!(!map.contains("_59.rs"), "tail should be dropped");
+    }
 }

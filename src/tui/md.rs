@@ -727,4 +727,144 @@ mod tests {
         assert_eq!(text_of(&l), "  ▎ ");
         assert!(!fence);
     }
+
+    #[test]
+    fn quotes_stack_bars_and_stay_dim() {
+        let mut fence = false;
+        let (l, c) = md_line("> quoted", &mut fence);
+        assert!(c);
+        assert_eq!(text_of(&l), "  ▎ quoted");
+        assert_eq!(l[1].1, C_DIM);
+        let (l, _) = md_line(">> > deep", &mut fence);
+        assert_eq!(text_of(&l), "  ▎ ▎ ▎ deep");
+        // an empty quote still carries its bar
+        let (l, c) = md_line(">", &mut fence);
+        assert!(c);
+        assert_eq!(text_of(&l), "  ▎ ");
+    }
+
+    #[test]
+    fn list_depth_changes_the_bullet() {
+        let mut fence = false;
+        for (raw, want) in [
+            ("- top", "  • top"),
+            ("  - nested", "    ◦ nested"),
+            ("    - deeper", "      ▪ deeper"),
+            ("      - deepest", "      ▪ deepest"), // depth is capped at 2
+            ("+ plus", "  • plus"),
+        ] {
+            let (l, _) = md_line(raw, &mut fence);
+            assert_eq!(text_of(&l), want, "{raw}");
+        }
+    }
+
+    #[test]
+    fn ordered_lists_accept_both_delimiters() {
+        let mut fence = false;
+        let (l, _) = md_line("1. first", &mut fence);
+        assert_eq!(text_of(&l), "  1. first");
+        let (l, _) = md_line("2) second", &mut fence);
+        assert_eq!(text_of(&l), "  2. second");
+        // more than three digits is not a list marker
+        let (l, _) = md_line("123456. nope", &mut fence);
+        assert_eq!(text_of(&l), "  123456. nope");
+        // nor is a missing space
+        let (l, _) = md_line("1.no", &mut fence);
+        assert_eq!(text_of(&l), "  1.no");
+    }
+
+    #[test]
+    fn heading_recognition_edges() {
+        assert_eq!(md_heading("# a"), Some((1, "a")));
+        assert_eq!(md_heading("###### six"), Some((6, "six")));
+        assert_eq!(md_heading("#"), Some((1, "")));
+        // no space after the hashes, or too many hashes: plain text
+        assert_eq!(md_heading("#no"), None);
+        assert_eq!(md_heading("####### seven"), None);
+        assert_eq!(md_heading("plain"), None);
+
+        let mut fence = false;
+        let (l, c) = md_line("#no", &mut fence);
+        assert!(c);
+        assert_eq!(text_of(&l), "  #no");
+        assert_eq!(l[1].1, Style::default());
+    }
+
+    #[test]
+    fn table_cells_handle_escaped_and_missing_edge_pipes() {
+        assert_eq!(md_cells("| a | b |"), ["a", "b"]);
+        assert_eq!(md_cells("a | b"), ["a", "b"]);
+        // an escaped pipe is data, not a separator
+        assert_eq!(md_cells("| a \\| b | c |"), ["a | b", "c"]);
+        assert_eq!(md_cells("|  |  |"), ["", ""]);
+
+        assert!(md_is_table_row("| a | b |"));
+        assert!(!md_is_table_row("a | b")); // needs a leading pipe
+        assert!(!md_is_table_row("| only one"));
+        assert!(!md_is_table_row("plain text"));
+        assert!(md_is_table_sep("|:--|--:|"));
+        assert!(!md_is_table_sep("| name | qty |"));
+        assert!(!md_is_table_sep("|  |--|"));
+    }
+
+    #[test]
+    fn narrow_tables_fall_back_to_plain_rows() {
+        let md = "| name | quantity |\n|:-----|---------:|\n| apples | 12 |\n";
+        let mut fence = false;
+        // wide enough: a boxed table with a right aligned numeric column
+        let out = md_block(md, &mut fence, 40);
+        let text: Vec<String> = out.iter().map(|(l, _)| text_of(l)).collect();
+        assert!(text.iter().any(|t| t.starts_with("  ┌")), "{text:?}");
+        assert!(
+            text.iter().any(|t| t == "  │ apples │       12 │"),
+            "{text:?}"
+        );
+        // too narrow: the border would eat the content, so rows go plain
+        let mut fence = false;
+        let out = md_block(md, &mut fence, 10);
+        let text: Vec<String> = out.iter().map(|(l, _)| text_of(l)).collect();
+        assert!(!text.iter().any(|t| t.contains('│')), "{text:?}");
+        assert_eq!(text, ["  | name | quantity |", "  | apples | 12 |", ""]);
+    }
+
+    #[test]
+    fn md_fit_truncates_with_an_ellipsis() {
+        let l: SLine = vec![("abcdefghij".to_string(), C_CODE)];
+        let fit = md_fit(&l, 10);
+        assert_eq!(text_of(&fit), "abcdefghij"); // exact fit is untouched
+
+        let fit = md_fit(&l, 5);
+        assert_eq!(text_of(&fit), "abcd…");
+        assert!(md_spans_w(&fit) <= 5);
+        assert_eq!(fit[1].1, C_DIM);
+
+        // the tail of a second span is dropped wholesale
+        let l: SLine = vec![
+            ("abc".to_string(), C_CODE),
+            ("def".to_string(), Style::default()),
+        ];
+        let fit = md_fit(&l, 4);
+        assert_eq!(text_of(&fit), "abc…");
+
+        // wide chars count as two columns
+        let l: SLine = vec![("汉字汉字".to_string(), C_CODE)];
+        let fit = md_fit(&l, 5);
+        assert!(md_spans_w(&fit) <= 5, "{fit:?}");
+        assert_eq!(text_of(&fit), "汉字…");
+    }
+
+    #[test]
+    fn block_keeps_blank_lines_and_fence_state() {
+        let mut fence = false;
+        let out = md_block("a\n\nb\n", &mut fence, 40);
+        let text: Vec<String> = out.iter().map(|(l, _)| text_of(l)).collect();
+        assert_eq!(text, ["  a", "", "  b", ""]);
+        assert_eq!(out.iter().filter(|(_, c)| *c).count(), 2);
+
+        // a blank line inside a fence is code, not paragraph content
+        let mut fence = false;
+        let out = md_block("```\n\n```\n", &mut fence, 40);
+        assert!(!fence);
+        assert!(out.iter().any(|(l, c)| !*c && text_of(l) == "  ▎ "));
+    }
 }

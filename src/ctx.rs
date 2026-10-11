@@ -183,6 +183,138 @@ mod tests {
     }
 
     #[test]
+    fn total_tokens_sums_content_and_tool_args() {
+        assert_eq!(total_tokens(&[]), 0);
+        assert_eq!(total_tokens(&[Msg::user("x")]), 5); // 4 + 1 estimated
+                                                        // a tool call adds its argument estimate plus a flat 10
+        let m = Msg::assistant(None, vec![tc("c1")]);
+        assert_eq!(total_tokens(&[m]), 15);
+    }
+
+    #[test]
+    fn repair_leaves_clean_history_untouched() {
+        let mut msgs = vec![
+            Msg::system("s"),
+            Msg::user("q"),
+            Msg::assistant(Some("a".into()), vec![tc("c1")]),
+            Msg::tool("c1", "r"),
+        ];
+        assert_eq!(repair(&mut msgs), 0);
+        assert_eq!(msgs.len(), 4);
+    }
+
+    #[test]
+    fn repair_drops_tool_results_without_a_request() {
+        // id present but unknown
+        let mut msgs = vec![Msg::system("s"), Msg::user("q"), Msg::tool("ghost", "r")];
+        assert_eq!(repair(&mut msgs), 1);
+        assert_eq!(msgs.len(), 2);
+
+        // no tool_call_id at all
+        let mut orphan = Msg::tool("c", "r");
+        orphan.tool_call_id = None;
+        let mut msgs = vec![Msg::system("s"), orphan];
+        assert_eq!(repair(&mut msgs), 1);
+        assert_eq!(msgs.len(), 1);
+    }
+
+    #[test]
+    fn repair_keeps_content_when_stripping_unanswered_calls() {
+        let mut msgs = vec![
+            Msg::system("s"),
+            Msg::user("q"),
+            Msg::assistant(Some("partial".into()), vec![tc("c1"), tc("c2")]),
+            Msg::tool("c1", "r"),
+        ];
+        assert_eq!(repair(&mut msgs), 1);
+        let a = msgs.iter().find(|m| m.role == "assistant").unwrap();
+        assert_eq!(a.content.as_deref(), Some("partial"));
+        let calls = a.tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "c1");
+    }
+
+    #[test]
+    fn compact_is_a_noop_when_small() {
+        let mut msgs = vec![Msg::system("s"), Msg::user("q")];
+        assert!(compact(&mut msgs, 1_000_000).is_none());
+        // over budget but fewer than 8 messages: nothing may be dropped
+        let mut msgs = vec![
+            Msg::system("x".repeat(4000)),
+            Msg::user("y".repeat(4000)),
+            Msg::assistant(Some("z".repeat(4000)), vec![]),
+        ];
+        assert!(compact(&mut msgs, 100).is_none());
+        assert_eq!(msgs.len(), 3);
+    }
+
+    #[test]
+    fn compact_stage_one_needs_no_message_drop() {
+        let mut msgs = vec![Msg::system("s")];
+        for i in 0..20 {
+            msgs.push(Msg::assistant(None, vec![tc(&format!("c{i}"))]));
+            msgs.push(Msg::tool(format!("c{i}"), "x".repeat(300)));
+        }
+        let before = total_tokens(&msgs);
+        let n = msgs.len();
+        // just over budget: eliding old tool outputs is enough
+        let note = compact(&mut msgs, before - 1).unwrap();
+        assert!(note.contains("elided"), "{note}");
+        assert!(!note.contains("dropped"), "stage 2 not needed: {note}");
+        assert_eq!(msgs.len(), n);
+        assert!(total_tokens(&msgs) < before);
+        // the head (system + earliest turns) is untouched
+        assert_eq!(msgs[0].role, "system");
+        // elision is recorded once and is idempotent
+        assert!(msgs.iter().any(|m| m.orig_len > 0));
+        assert!(compact(&mut msgs, before - 1).is_none());
+    }
+
+    #[test]
+    fn compact_stage_two_drops_the_middle_and_repairs_orphans() {
+        let mut msgs = vec![Msg::system("s"), Msg::user("first")];
+        for i in 0..2 {
+            msgs.push(Msg::assistant(None, vec![tc(&format!("c{i}"))]));
+            msgs.push(Msg::tool(format!("c{i}"), "y".repeat(300)));
+        }
+        // this call lands outside the kept tail while its result stays inside
+        msgs.push(Msg::assistant(None, vec![tc("cut")]));
+        msgs.push(Msg::tool("cut", "y".repeat(300)));
+        for i in 2..7 {
+            msgs.push(Msg::assistant(None, vec![tc(&format!("c{i}"))]));
+            msgs.push(Msg::tool(format!("c{i}"), "y".repeat(300)));
+        }
+        msgs.push(Msg::assistant(Some("tail".into()), vec![]));
+        assert_eq!(msgs.len(), 19);
+
+        let note = compact(&mut msgs, 100).unwrap();
+        assert_eq!(
+            note,
+            "compacted: elided 4 outputs, dropped 5 msgs (+1 orphans)"
+        );
+        assert_eq!(msgs[0].role, "system");
+        assert_eq!(msgs[1].role, "user");
+        assert!(msgs[2]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("context compacted: 5"));
+        // the orphaned tool result is gone, and no new orphans were created
+        let calls: HashSet<&str> = msgs
+            .iter()
+            .flat_map(|m| m.tool_calls.iter())
+            .flat_map(|v| v.iter())
+            .map(|t| t.id.as_str())
+            .collect();
+        for m in &msgs {
+            if m.role == "tool" {
+                assert!(calls.contains(m.tool_call_id.as_deref().unwrap()), "{m:?}");
+            }
+        }
+        assert!(msgs.len() < 19);
+    }
+
+    #[test]
     fn elides_old_tool_outputs() {
         let mut msgs = vec![Msg::system("s")];
         for i in 0..20 {

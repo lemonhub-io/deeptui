@@ -279,4 +279,109 @@ mod tests {
         assert_eq!(sanitize("\x1b[31mhi\x1b[0m"), "hi");
         assert_eq!(sanitize("a\tb"), "a    b");
     }
+
+    #[test]
+    fn fmt_tokens_boundaries() {
+        assert_eq!(fmt_tokens(0), "0");
+        assert_eq!(fmt_tokens(999), "999");
+        assert_eq!(fmt_tokens(1_000), "1.0k");
+        assert_eq!(fmt_tokens(1_500), "1.5k");
+        // 9999 rounds up to 10.0k in the sub-10k branch, not the k branch
+        assert_eq!(fmt_tokens(9_999), "10.0k");
+        assert_eq!(fmt_tokens(10_000), "10k");
+        assert_eq!(fmt_tokens(123_456), "123k");
+    }
+
+    #[test]
+    fn est_tokens_counts_scripts_differently() {
+        assert_eq!(est_tokens(""), 1);
+        // 400 ASCII chars ~= 100 tokens (+1 floor)
+        assert_eq!(est_tokens(&"x".repeat(400)), 101);
+        // CJK is ~1 token/char, not 1 per 4
+        assert_eq!(est_tokens(&"字".repeat(100)), 101);
+    }
+
+    #[test]
+    fn one_line_flattens_newlines_and_marks_truncation() {
+        assert_eq!(one_line("a\nb", 10), "a⏎b");
+        assert_eq!(one_line("abc", 3), "abc");
+        assert_eq!(one_line("abcdef", 3), "abc…");
+        // max counts chars, not bytes: wide chars must not blow the budget
+        assert_eq!(one_line("文档字", 2), "文档…");
+    }
+
+    #[test]
+    fn sanitize_keeps_newlines_drops_cr_and_bel() {
+        assert_eq!(sanitize("a\rb\x07c"), "abc");
+        assert_eq!(sanitize("x\ny"), "x\ny");
+        // OSC-8 hyperlink wrappers vanish, the label survives
+        assert_eq!(sanitize("\x1b]8;;http://x\x07link\x1b]8;;\x07"), "link");
+    }
+
+    #[test]
+    fn wrap_zero_width_and_long_words() {
+        let l = sline("abc", Style::default());
+        assert_eq!(wrap_sline(&l, 0), vec![Vec::new()]);
+
+        // a word longer than the row is hard-split and nothing is lost
+        let l = sline("abcdefghij", Style::default());
+        let rows = wrap_sline(&l, 4);
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        let all: String = rows
+            .iter()
+            .flat_map(|r| r.iter().map(|(t, _)| t.as_str()))
+            .collect();
+        assert_eq!(all, "abcdefghij");
+    }
+
+    #[test]
+    fn wrap_counts_wide_chars_as_two_columns() {
+        let l = vec![
+            ("  ".to_string(), Style::default()),
+            ("汉字汉字汉".to_string(), Style::default()),
+        ];
+        let rows = wrap_sline(&l, 6); // 2 spaces of lead -> 4 columns of text
+        for r in &rows {
+            let w: usize = r.iter().map(|(t, _)| span_w(t)).sum();
+            assert!(w <= 6, "row too wide ({w}): {r:?}");
+        }
+        let joined: String = rows
+            .iter()
+            .flat_map(|r| r.iter().map(|(t, _)| t.as_str()))
+            .collect();
+        assert_eq!(joined.replace(' ', ""), "汉字汉字汉");
+    }
+
+    #[test]
+    fn wrap_splits_styles_and_drops_markers_on_continuation() {
+        use ratatui::style::Modifier;
+        let l = vec![
+            ("  • ".to_string(), Style::default()),
+            (
+                "aaaa".to_string(),
+                Style::new().add_modifier(Modifier::BOLD),
+            ),
+            (" bbbb".to_string(), Style::default()),
+        ];
+        let rows = wrap_sline(&l, 8);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0][0].0, "  • ");
+        // continuation row blanks the bullet but keeps its width
+        assert_eq!(rows[1][0].0, "    ");
+        let bold: Vec<&str> = rows[0]
+            .iter()
+            .filter(|(_, s)| s.add_modifier.contains(Modifier::BOLD))
+            .map(|(t, _)| t.as_str())
+            .collect();
+        assert_eq!(bold, ["aaaa"]);
+    }
+
+    #[test]
+    fn empty_content_keeps_prefix_row() {
+        // a gutter-only line (code-block bar, blank quote) must not vanish
+        let l = vec![("  ▎ ".to_string(), Style::default())];
+        let rows = wrap_sline(&l, 20);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0].0, "  ▎ ");
+    }
 }

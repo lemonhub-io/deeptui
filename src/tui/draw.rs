@@ -253,6 +253,7 @@ pub(super) fn render(f: &mut Frame, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::C_ERR;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::time::Instant;
@@ -349,5 +350,45 @@ mod tests {
         // chat is 10 - 3 (input) - 1 (status) = 6 rows; follow-scroll must
         // land exactly on wrapped.len() - 6, not one further
         assert_eq!(app.scroll, app.wrapped.len().saturating_sub(6));
+    }
+
+    #[test]
+    fn tiny_terminal_does_not_panic_and_shows_status() {
+        let mut app = App::new();
+        app.model = "m".into();
+        app.push_user("a very long prompt that cannot possibly fit", false);
+        app.stream = "a very long answer that also cannot fit".into();
+        for (w, h) in [(20u16, 6u16), (1, 1), (200, 2)] {
+            let backend = TestBackend::new(w, h);
+            let mut term = Terminal::new(backend).unwrap();
+            term.draw(|f| render(f, &mut app)).unwrap();
+            let s = screen(term.backend().buffer(), w, h);
+            assert!(!s.is_empty(), "{w}x{h} rendered nothing");
+            assert_eq!(s.lines().count(), h as usize);
+        }
+    }
+
+    #[test]
+    fn failed_tools_and_queued_prompts_are_visible() {
+        let mut app = App::new();
+        app.running = true;
+        app.fail_cnt = 2;
+        app.ok_cnt = 1;
+        app.push_user("next one", true);
+        app.push(vec![
+            ("    └ ".into(), C_GUTTER),
+            ("✗ 9ms".into(), C_ERR),
+            ("  boom".into(), C_DIM),
+        ]);
+        let backend = TestBackend::new(70, 14);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| render(f, &mut app)).unwrap();
+        let s = screen(term.backend().buffer(), 70, 14);
+        assert!(s.contains("❯ next one (queued)"), "queued echo:\n{s}");
+        assert!(
+            s.contains("└ ✗ 9ms") && s.contains("boom"),
+            "tool error:\n{s}"
+        );
+        assert!(s.contains("1✓ 2✗"), "counters:\n{s}");
     }
 }

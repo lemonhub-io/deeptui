@@ -9,6 +9,9 @@ mod tui;
 mod types;
 mod util;
 
+#[cfg(test)]
+mod testutil;
+
 use agent::AgentEvent;
 use anyhow::{bail, Result};
 use clap::Parser;

@@ -59,14 +59,18 @@ const PRICES: &[Price] = &[
 ];
 
 /// DeepSeek peak billing window: weekdays 01:00–04:00 and 06:00–10:00 UTC.
+fn deepseek_peak_at(secs: u64) -> bool {
+    let dow = (secs / 86400 + 3) % 7; // 1970-01-01 was a Thursday; 0=Mon … 6=Sun
+    let hour = (secs % 86400) / 3600;
+    dow < 5 && ((1..4).contains(&hour) || (6..10).contains(&hour))
+}
+
 fn deepseek_peak_now() -> bool {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let dow = (secs / 86400 + 3) % 7; // 1970-01-01 was a Thursday; 0=Mon … 6=Sun
-    let hour = (secs % 86400) / 3600;
-    dow < 5 && ((1..4).contains(&hour) || (6..10).contains(&hour))
+    deepseek_peak_at(secs)
 }
 
 #[derive(Clone, Debug)]
@@ -204,5 +208,133 @@ impl Config {
         )?;
         println!("wrote {}", p.display());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn price(model: &str) -> &'static Price {
+        Config::lookup_price(model).unwrap_or_else(|| panic!("no price for {model}"))
+    }
+
+    fn cfg() -> Config {
+        Config {
+            api_key: "k".into(),
+            base_url: "http://x/v1".into(),
+            model: "gpt-4o-mini".into(),
+            context_budget: 60_000,
+            max_output_tokens: 8_192,
+            bash_timeout_ms: 30_000,
+            price_in: 0.15,
+            price_out: 0.60,
+            price_cached: 0.075,
+            ds_peak: false,
+            use_map: true,
+        }
+    }
+
+    #[test]
+    fn price_lookup_matches_the_longest_prefix() {
+        // dated snapshots and suffixes resolve to the base model
+        assert_eq!(price("gpt-4o-mini-2024-07-18").prefix, "gpt-4o-mini");
+        assert_eq!(price("gpt-4o-mini").input, 0.15);
+        // ...and never to a shorter prefix that also matches
+        assert_eq!(price("gpt-4o-2024-08-06").prefix, "gpt-4o");
+        assert_eq!(price("gpt-5-mini").prefix, "gpt-5-mini");
+        assert_eq!(price("qwen2.5-coder-32b").prefix, "qwen");
+        assert!(price("deepseek-reasoner").ds_peak);
+        assert!(!price("claude-sonnet-4").ds_peak);
+        // unknown models fall through to config-file prices instead
+        assert!(Config::lookup_price("mystery-model").is_none());
+        assert!(Config::lookup_price("").is_none());
+    }
+
+    #[test]
+    fn cost_bills_cache_hits_separately_and_clamps_them() {
+        let c = cfg();
+        // 1M fresh input + 1M output at 0.15/0.60 per 1M = 0.75
+        assert!((c.cost(1_000_000, 1_000_000, 0) - 0.75).abs() < 1e-12);
+        // cached input is billed at the cached rate
+        assert!((c.cost(1_000_000, 0, 1_000_000) - 0.075).abs() < 1e-12);
+        // 600k misses + 400k cache hits
+        assert!((c.cost(1_000_000, 0, 400_000) - 0.6 * 0.15 - 0.4 * 0.075).abs() < 1e-12);
+        // a cached count larger than the input cannot make the bill negative
+        assert!((c.cost(1_000_000, 0, 9_000_000) - 0.075).abs() < 1e-12);
+        assert_eq!(c.cost(0, 0, 0), 0.0);
+    }
+
+    #[test]
+    fn peak_multiplier_only_ever_doubles() {
+        let mut c = cfg();
+        c.ds_peak = true;
+        let base = c.cost(1_000_000, 1_000_000, 0);
+        c.ds_peak = false;
+        let off = c.cost(1_000_000, 1_000_000, 0);
+        // if the machine happens to run inside a peak window the bill doubles
+        let mult = base / off;
+        assert!(
+            (mult - 1.0).abs() < 1e-12 || (mult - 2.0).abs() < 1e-12,
+            "unexpected multiplier {mult}"
+        );
+    }
+
+    #[test]
+    fn peak_windows_are_weekday_hours_in_utc() {
+        // 1970-01-01 was a Thursday (dow 3)
+        assert!(!deepseek_peak_at(0));
+        assert!(deepseek_peak_at(3600)); // 01:00
+        assert!(!deepseek_peak_at(4 * 3600)); // 04:00 is off-peak again
+        assert!(deepseek_peak_at(6 * 3600));
+        assert!(deepseek_peak_at(9 * 3600));
+        assert!(!deepseek_peak_at(10 * 3600));
+        assert!(!deepseek_peak_at(23 * 3600));
+        // Saturday (day 2) and Sunday (day 3) never peak
+        for day in [2u64, 3] {
+            for hour in [1u64, 7] {
+                assert!(!deepseek_peak_at(day * 86400 + hour * 3600));
+            }
+        }
+        // Monday (day 4) 06:00 is peak again
+        assert!(deepseek_peak_at(4 * 86400 + 6 * 3600));
+    }
+
+    #[test]
+    fn load_prefers_cli_flags_and_keeps_the_budget_floor() {
+        let c = Config::load(
+            Some("gpt-4o-mini"),
+            Some("https://api.x/v1/"),
+            Some("sk-cli"),
+            Some(10),
+            true,
+        )
+        .unwrap();
+        assert_eq!(c.api_key, "sk-cli");
+        assert_eq!(c.model, "gpt-4o-mini");
+        assert_eq!(c.base_url, "https://api.x/v1"); // trailing slash trimmed
+        assert_eq!(c.context_budget, 4_000); // degenerate budget is floored
+        assert!(!c.use_map); // --no-map always wins
+        assert_eq!(
+            (c.price_in, c.price_out, c.price_cached),
+            (0.15, 0.60, 0.075)
+        );
+        assert!(!c.ds_peak);
+
+        let c = Config::load(
+            Some("gpt-4o-mini"),
+            Some("https://api.x/v1"),
+            Some("k"),
+            Some(123_456),
+            false,
+        )
+        .unwrap();
+        assert_eq!(c.context_budget, 123_456);
+
+        // deepseek models carry the peak-billing flag and their own rates
+        let c = Config::load(Some("deepseek-chat"), None, Some("k"), None, false).unwrap();
+        assert!(c.ds_peak);
+        assert_eq!(c.price_in, 0.28);
+        assert_eq!(c.price_cached, 0.028);
     }
 }

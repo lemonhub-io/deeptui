@@ -572,4 +572,163 @@ mod tests {
             .unwrap();
         assert_eq!(last_txt, "● plain answer", "{last_txt}");
     }
+
+    #[test]
+    fn push_user_marks_the_first_line_and_ends_with_a_blank() {
+        let mut app = App::new();
+        app.push_user("first\nsecond", false);
+        assert_eq!(app.log.len(), 3);
+        assert_eq!(text_of(&app.log[0]), "❯ first");
+        assert_eq!(text_of(&app.log[1]), "  second");
+        assert!(app.log[2].is_empty());
+        app.push_user("deferred", true);
+        assert_eq!(text_of(&app.log[3]), "❯ deferred (queued)");
+    }
+
+    #[test]
+    fn note_is_dim_and_indented() {
+        let mut app = App::new();
+        app.note("hint");
+        assert_eq!(app.log.len(), 1);
+        assert_eq!(text_of(&app.log[0]), "  hint");
+        assert_eq!(app.log[0][0].1, C_DIM);
+    }
+
+    #[test]
+    fn ensure_wrap_is_incremental_and_rebuilds_on_width_change() {
+        let mut app = App::new();
+        app.push(sline("hello", Style::default()));
+        app.ensure_wrap(40);
+        assert_eq!((app.wrap_w, app.wrap_len, app.wrapped.len()), (40, 1, 1));
+
+        // a new line is appended without redoing the earlier one
+        app.push(sline("more", Style::default()));
+        app.ensure_wrap(40);
+        assert_eq!((app.wrap_len, app.wrapped.len()), (2, 2));
+
+        // narrowing re-wraps everything and flags the live stream as dirty
+        app.stream_dirty = false;
+        app.ensure_wrap(4);
+        assert_eq!(app.wrap_w, 4);
+        assert_eq!(app.wrap_len, app.log.len());
+        assert_eq!(app.wrapped.len(), 3); // "hello" splits into two rows
+        assert!(app.stream_dirty);
+    }
+
+    #[test]
+    fn scroll_by_detaches_follow_and_saturates_at_zero() {
+        let mut app = App::new();
+        assert!(app.follow);
+        app.scroll_by(5);
+        assert_eq!(app.scroll, 5);
+        assert!(!app.follow);
+        app.scroll_by(-2);
+        assert_eq!(app.scroll, 3);
+        app.scroll_by(-100);
+        assert_eq!(app.scroll, 0);
+    }
+
+    #[test]
+    fn round_events_reset_task_totals_only_on_the_first_round() {
+        let mut app = App::new();
+        let cfg = cfg();
+        apply(&mut app, AgentEvent::Token("he".into()), &cfg);
+        apply(&mut app, AgentEvent::Token("y".into()), &cfg);
+        assert_eq!(app.stream, "hey");
+        assert!(app.stream_dirty);
+
+        app.task_cost = 9.9;
+        app.task_in = 5;
+        app.task_out = 6;
+        app.task_cached = 7;
+        apply(&mut app, AgentEvent::Round(2), &cfg);
+        assert_eq!(app.iter, 2);
+        assert_eq!(app.task_cost, 9.9);
+        apply(&mut app, AgentEvent::Round(1), &cfg);
+        assert_eq!(app.iter, 1);
+        assert_eq!(
+            (app.task_cost, app.task_in, app.task_out, app.task_cached),
+            (0.0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn usage_events_accumulate_tokens_and_cost() {
+        let mut app = App::new();
+        let cfg = cfg();
+        apply(
+            &mut app,
+            AgentEvent::Usage {
+                input: 1_000_000,
+                output: 500_000,
+                cached: 200_000,
+            },
+            &cfg,
+        );
+        let expect = cfg.cost(1_000_000, 500_000, 200_000);
+        assert!((app.cost - expect).abs() < 1e-12);
+        assert!((app.task_cost - expect).abs() < 1e-12);
+        assert_eq!(
+            (app.in_tok, app.out_tok, app.cached),
+            (1_000_000, 500_000, 200_000)
+        );
+        // a zeroed usage event is a no-op
+        apply(
+            &mut app,
+            AgentEvent::Usage {
+                input: 0,
+                output: 0,
+                cached: 0,
+            },
+            &cfg,
+        );
+        assert_eq!(app.cost, expect);
+    }
+
+    #[test]
+    fn tool_events_flush_the_stream_and_mark_results() {
+        let mut app = App::new();
+        let cfg = cfg();
+        app.stream = "thinking out loud".into();
+        app.stream_dirty = true;
+        apply(
+            &mut app,
+            AgentEvent::ToolStart {
+                name: "bash".into(),
+                args: "ls -a".into(),
+            },
+            &cfg,
+        );
+        // the streamed text landed in the log before the tool line
+        assert!(app.stream.is_empty());
+        assert!(!app.stream_dirty);
+        assert!(
+            app.log
+                .iter()
+                .map(text_of)
+                .any(|t| t == "● thinking out loud"),
+            "stream not flushed: {:?}",
+            app.log.iter().map(text_of).collect::<Vec<_>>()
+        );
+        assert_eq!(text_of(app.log.last().unwrap()), "  ◆ bash ls -a");
+        // flush_stream ends the block with a blank separator line
+        assert!(app.log[app.log.len() - 2].is_empty());
+
+        for (is_err, want) in [(false, "    └ ✓ 12ms  ok"), (true, "    └ ✗ 7ms  boom")] {
+            apply(
+                &mut app,
+                AgentEvent::ToolEnd {
+                    name: "bash".into(),
+                    ms: if is_err { 7 } else { 12 },
+                    preview: if is_err { "boom".into() } else { "ok".into() },
+                    is_err,
+                },
+                &cfg,
+            );
+            assert_eq!(text_of(app.log.last().unwrap()), want);
+        }
+
+        apply(&mut app, AgentEvent::Compacted("elided 3".into()), &cfg);
+        assert_eq!(text_of(app.log.last().unwrap()), "  ⛁ elided 3");
+    }
 }

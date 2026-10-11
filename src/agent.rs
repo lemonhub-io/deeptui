@@ -66,6 +66,76 @@ pub fn system_prompt(root: &std::path::Path, use_map: bool) -> String {
     s
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::TmpDir;
+
+    #[test]
+    fn prompt_names_the_root_and_the_rules() {
+        let t = TmpDir::new("prompt");
+        let p = system_prompt(t.path(), false);
+        assert!(p.starts_with("You are ragent"));
+        assert!(p.contains(&format!("Project root: {}", t.path().display())));
+        assert!(p.contains("Prefer edit_file"));
+        assert!(!p.contains("## Project map"));
+    }
+
+    #[test]
+    fn project_map_is_optional_and_contains_paths() {
+        let t = TmpDir::new("prompt-map");
+        t.write("src/lib.rs", "pub fn exported() {}\n");
+        let with = system_prompt(t.path(), true);
+        assert!(with.contains("## Project map"), "{with}");
+        assert!(with.contains("src/lib.rs"));
+        assert!(with.contains("    pub fn exported() {}"), "{with}");
+        // dropping the map loses the repo skeleton but keeps the rules
+        let without = system_prompt(t.path(), false);
+        assert!(!without.contains("## Project map"));
+        assert!(without.contains("Prefer edit_file"));
+        assert!(!without.contains("src/lib.rs"));
+    }
+
+    #[test]
+    fn instruction_files_are_appended_in_order() {
+        let t = TmpDir::new("prompt-files");
+        t.write("AGENTS.md", "agents rules");
+        t.write("CLAUDE.md", "claude rules");
+        t.write(".ragent/rules.md", "local rules");
+        let p = system_prompt(t.path(), false);
+        let a = p
+            .find("## AGENTS.md\nagents rules")
+            .expect("AGENTS.md missing");
+        let c = p
+            .find("## CLAUDE.md\nclaude rules")
+            .expect("CLAUDE.md missing");
+        let r = p
+            .find("## .ragent/rules.md\nlocal rules")
+            .expect(".ragent/rules.md missing");
+        assert!(a < c && c < r, "wrong order");
+    }
+
+    #[test]
+    fn instruction_files_are_capped_and_missing_ones_skipped() {
+        let t = TmpDir::new("prompt-cap");
+        let p = system_prompt(t.path(), true);
+        assert!(!p.contains("## AGENTS.md"));
+        assert!(!p.contains("## CLAUDE.md"));
+        assert!(!p.contains("## .ragent/rules.md"));
+
+        // a directory named AGENTS.md must not blow up the prompt builder
+        std::fs::create_dir_all(t.join("AGENTS.md")).unwrap();
+        assert!(!system_prompt(t.path(), false).contains("## AGENTS.md"));
+        std::fs::remove_dir_all(t.join("AGENTS.md")).unwrap();
+
+        t.write("AGENTS.md", &"x".repeat(5000));
+        let p = system_prompt(t.path(), false);
+        let body = p.split("## AGENTS.md\n").nth(1).unwrap();
+        assert_eq!(body.chars().count(), 4000);
+        assert_eq!(body, "x".repeat(4000));
+    }
+}
+
 #[derive(Default)]
 struct TcBuild {
     id: String,

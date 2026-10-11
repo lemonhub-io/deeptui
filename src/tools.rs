@@ -466,7 +466,142 @@ pub async fn exec(
 
 #[cfg(test)]
 mod tests {
-    use super::cap_lines;
+    use super::*;
+    use crate::testutil::TmpDir;
+    use serde_json::json;
+
+    #[test]
+    fn resolve_confines_relative_paths() {
+        let t = TmpDir::new("resolve");
+        let root = t.path();
+        assert_eq!(
+            resolve(root, "src/main.rs").unwrap(),
+            root.join("src/main.rs")
+        );
+        // dot segments are normalised away
+        assert_eq!(resolve(root, "./a/../b").unwrap(), root.join("b"));
+        assert!(resolve(root, "").unwrap_err().contains("empty path"));
+        assert!(resolve(root, "   ").unwrap_err().contains("empty path"));
+        let err = resolve(root, "../outside").unwrap_err();
+        assert!(err.contains("escapes project root"), "{err}");
+        // absolute paths are honoured (bash is unrestricted anyway)
+        assert_eq!(
+            resolve(root, "/tmp/./x").unwrap(),
+            std::path::PathBuf::from("/tmp/x")
+        );
+    }
+
+    #[test]
+    fn write_read_round_trip_numbers_lines() {
+        let t = TmpDir::new("read");
+        let root = t.path();
+        let msg = write_file_sync(
+            root,
+            &json!({"path": "sub/dir/f.txt", "content": "a\nb\nc\n"}),
+        )
+        .unwrap();
+        assert_eq!(msg, "wrote sub/dir/f.txt (6 B)");
+        assert!(t.join("sub/dir/f.txt").is_file());
+
+        let out = read_file_sync(root, &json!({"path": "sub/dir/f.txt"})).unwrap();
+        assert_eq!(out, "   1│a\n   2│b\n   3│c\n");
+        // offset is 1-based and a limit that stops early says so
+        let out = read_file_sync(
+            root,
+            &json!({"path": "sub/dir/f.txt", "offset": 2, "limit": 1}),
+        )
+        .unwrap();
+        assert_eq!(out, "   2│b\n… stopped at line 3 of 3 (use offset/limit)\n");
+        let out = read_file_sync(
+            root,
+            &json!({"path": "sub/dir/f.txt", "offset": 2, "limit": 9}),
+        )
+        .unwrap();
+        assert_eq!(out, "   2│b\n   3│c\n");
+        // an empty file reads as such
+        t.write("empty.txt", "");
+        assert_eq!(
+            read_file_sync(root, &json!({"path": "empty.txt"})).unwrap(),
+            "(empty file)"
+        );
+    }
+
+    #[test]
+    fn read_file_guards_bounds_binaries_and_long_lines() {
+        let t = TmpDir::new("read-guards");
+        let root = t.path();
+        let err = read_file_sync(root, &json!({"path": "missing.txt"})).unwrap_err();
+        assert!(err.contains("missing.txt"), "{err}");
+
+        t.write("f.txt", "a\nb\nc\n");
+        assert!(read_file_sync(root, &json!({"path": "f.txt", "offset": 9}))
+            .unwrap_err()
+            .contains("beyond 3 lines"));
+
+        std::fs::write(t.join("bin.dat"), b"ab\x00cd").unwrap();
+        let err = read_file_sync(root, &json!({"path": "bin.dat"})).unwrap_err();
+        assert!(err.contains("binary file"), "{err}");
+
+        // a 500-char line is clipped at LINE_CAP with a marker
+        t.write("long.txt", &format!("{}\n", "x".repeat(500)));
+        let out = read_file_sync(root, &json!({"path": "long.txt"})).unwrap();
+        assert!(out.contains('…'), "{out}");
+        let body = out
+            .lines()
+            .next()
+            .unwrap()
+            .trim_start_matches(|c: char| !c.is_alphabetic());
+        assert_eq!(body.trim_end_matches(" …").len(), 400);
+    }
+
+    #[test]
+    fn edit_file_applies_exact_matches_only() {
+        let t = TmpDir::new("edit");
+        let root = t.path();
+        let p = t.write("f.txt", "hello world\nsecond line\n");
+
+        let msg = edit_file_sync(
+            root,
+            &json!({"path": "f.txt", "edits": [{"old": "hello world", "new": "hello there"}]}),
+        )
+        .unwrap();
+        assert_eq!(msg, "applied 1 edits to f.txt (+1/-1 lines)");
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "hello there\nsecond line\n"
+        );
+
+        // shrinking a two-line region reports +1/-2
+        let msg = edit_file_sync(
+            root,
+            &json!({"path": "f.txt", "edits": [{"old": "hello there\nsecond", "new": "hi"}]}),
+        )
+        .unwrap();
+        assert!(msg.ends_with("(+1/-2 lines)"), "{msg}");
+    }
+
+    #[test]
+    fn edit_file_rejects_ambiguous_missing_and_empty_edits() {
+        let t = TmpDir::new("edit-err");
+        let root = t.path();
+        t.write("f.txt", "aa aa\n");
+        let err = edit_file_sync(
+            root,
+            &json!({"path": "f.txt", "edits": [{"old": "aa", "new": "bb"}]}),
+        )
+        .unwrap_err();
+        assert!(err.contains("matches 2 times"), "{err}");
+        let err = edit_file_sync(
+            root,
+            &json!({"path": "f.txt", "edits": [{"old": "zz", "new": "bb"}]}),
+        )
+        .unwrap_err();
+        assert!(err.contains("not found"), "{err}");
+        let err = edit_file_sync(root, &json!({"path": "f.txt", "edits": []})).unwrap_err();
+        assert_eq!(err, "no edits");
+        // nothing was written by the failed attempts
+        assert_eq!(std::fs::read_to_string(t.join("f.txt")).unwrap(), "aa aa\n");
+    }
 
     #[test]
     fn cap_lines_keeps_head_and_tail_with_elision() {
@@ -490,5 +625,120 @@ mod tests {
         // Tail preserved.
         assert_eq!(lines[lines.len() - 1], "line300");
         assert_eq!(lines[lines.len() - 50], "line251");
+    }
+
+    #[test]
+    fn cap_lines_is_a_noop_under_the_cap() {
+        let s = "a\nb\nc";
+        assert_eq!(cap_lines(s, 10, 10), s);
+        // exactly head+tail lines still fits
+        assert_eq!(cap_lines("1\n2\n3\n4", 2, 2), "1\n2\n3\n4");
+        let out = cap_lines("1\n2\n3\n4\n5", 2, 2);
+        assert_eq!(out, "1\n2\n… [1 lines elided] …\n4\n5");
+    }
+
+    #[test]
+    fn ls_lists_dirs_first_then_files() {
+        let t = TmpDir::new("ls");
+        let root = t.path();
+        assert_eq!(ls_sync(root, &json!({})).unwrap(), "(empty)");
+
+        t.write("zeta.txt", "abc");
+        t.write("alpha/file", "");
+        t.write("beta/file", "");
+        let out = ls_sync(root, &json!({"path": "."})).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines, ["alpha/", "beta/", "zeta.txt (3 B)"]);
+    }
+
+    #[test]
+    fn grep_reports_hits_limits_and_globs() {
+        let t = TmpDir::new("grep");
+        let root = t.path();
+        t.write("a.rs", "needle one\nplain\nneedle two\n");
+        t.write("b.txt", "needle three\n");
+
+        let out = grep_sync(root, &json!({"pattern": "needle"})).unwrap();
+        assert!(out.contains("a.rs:1: needle one"), "{out}");
+        assert!(out.contains("a.rs:3: needle two"), "{out}");
+        assert!(out.contains("b.txt:1: needle three"), "{out}");
+
+        // glob narrows the walk, max stops it
+        let out = grep_sync(root, &json!({"pattern": "needle", "glob": "*.rs"})).unwrap();
+        assert!(out.contains("a.rs") && !out.contains("b.txt"), "{out}");
+        let out = grep_sync(root, &json!({"pattern": "needle", "max": 1})).unwrap();
+        assert!(out.contains("stopped at 1 hits"), "{out}");
+
+        assert_eq!(
+            grep_sync(root, &json!({"pattern": "absent"})).unwrap_err(),
+            "no matches"
+        );
+        let err = grep_sync(root, &json!({"pattern": "(unclosed"})).unwrap_err();
+        assert!(err.starts_with("bad regex"), "{err}");
+        // an escaping search dir is refused
+        let err = grep_sync(root, &json!({"pattern": "x", "path": "../.."})).unwrap_err();
+        assert!(err.contains("escapes project root"), "{err}");
+    }
+
+    #[test]
+    fn glob_matches_patterns_relative_to_the_dir() {
+        let t = TmpDir::new("glob");
+        let root = t.path();
+        t.write("src/a.rs", "");
+        t.write("src/b.txt", "");
+        let out = glob_sync(root, &json!({"pattern": "**/*.rs"})).unwrap();
+        assert_eq!(out, "src/a.rs\n");
+        let out = glob_sync(root, &json!({"pattern": "**/*.*", "path": "src"})).unwrap();
+        assert!(
+            out.contains("src/a.rs") && out.contains("src/b.txt"),
+            "{out}"
+        );
+        assert_eq!(
+            glob_sync(root, &json!({"pattern": "**/*.go"})).unwrap_err(),
+            "no matches"
+        );
+        assert_eq!(glob_sync(root, &json!({})).unwrap_err(), "missing pattern");
+    }
+
+    #[test]
+    fn specs_and_parallelism_cover_every_tool() {
+        let specs = specs();
+        let names: Vec<&str> = specs
+            .iter()
+            .map(|s| s["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "read_file",
+                "edit_file",
+                "write_file",
+                "bash",
+                "grep",
+                "glob",
+                "ls",
+                "repomap"
+            ]
+        );
+        for s in &specs {
+            assert_eq!(s["type"], "function");
+            assert_eq!(s["function"]["parameters"]["type"], "object");
+            let req = s["function"]["parameters"]["required"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            for name in req {
+                let p = name.as_str().unwrap();
+                assert!(
+                    s["function"]["parameters"]["properties"].get(p).is_some(),
+                    "required {p} has no schema"
+                );
+            }
+        }
+        // mutating tools never run in a parallel batch
+        assert!(is_parallel("read_file") && is_parallel("grep") && is_parallel("repomap"));
+        for t in ["bash", "edit_file", "write_file", "nope"] {
+            assert!(!is_parallel(t), "{t}");
+        }
     }
 }

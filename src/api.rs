@@ -234,6 +234,79 @@ mod tests {
     }
 
     #[test]
+    fn ignores_empty_and_unparseable_payloads() {
+        assert!(parse_chunk("").is_empty());
+        assert!(parse_chunk("not json").is_empty());
+        // an empty content delta and an empty tool_calls array yield nothing
+        assert!(parse_chunk(
+            r#"{"choices":[{"delta":{"content":"","tool_calls":[]},"finish_reason":null}]}"#
+        )
+        .is_empty());
+        // a null finish_reason is not a Finish event
+        assert!(parse_chunk(r#"{"choices":[{"delta":{},"finish_reason":null}]}"#).is_empty());
+    }
+
+    #[test]
+    fn parses_multiple_choices_in_order() {
+        let evs = parse_chunk(
+            r#"{"choices":[{"delta":{"content":"a"},"finish_reason":null},{"delta":{"content":"b"},"finish_reason":"stop"}]}"#,
+        );
+        assert_eq!(evs.len(), 3, "{evs:?}");
+        assert!(matches!(&evs[0], Ev::Text(t) if t == "a"));
+        assert!(matches!(&evs[1], Ev::Text(t) if t == "b"));
+        assert!(matches!(&evs[2], Ev::Finish(f) if f == "stop"));
+    }
+
+    #[test]
+    fn parses_tool_delta_without_id_or_args() {
+        let evs = parse_chunk(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":2,"function":{"name":"grep"}}]},"finish_reason":null}]}"#,
+        );
+        match &evs[0] {
+            Ev::TcDelta {
+                idx,
+                id,
+                name,
+                args,
+            } => {
+                assert_eq!(*idx, 2);
+                assert!(id.is_none());
+                assert_eq!(name.as_deref(), Some("grep"));
+                assert_eq!(args, "");
+            }
+            other => panic!("expected TcDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn surfaces_api_errors() {
+        let evs = parse_chunk(r#"{"error":{"message":"bad key"}}"#);
+        assert_eq!(evs.len(), 1);
+        assert!(matches!(&evs[0], Ev::Finish(f) if f == "api error: bad key"));
+        // a message-less error still becomes a Finish
+        assert!(matches!(&parse_chunk(r#"{"error":{}}"#)[0], Ev::Finish(f) if f == "api error: ?"));
+    }
+
+    #[test]
+    fn usage_prefers_details_over_deepseek_fallback() {
+        let evs = parse_chunk(
+            r#"{"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":1,"prompt_cache_hit_tokens":7}}"#,
+        );
+        assert!(matches!(
+            evs[0],
+            Ev::Usage {
+                input: 9,
+                output: 1,
+                cached: 7
+            }
+        ));
+        let evs = parse_chunk(
+            r#"{"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":3},"prompt_cache_hit_tokens":7}}"#,
+        );
+        assert!(matches!(evs[0], Ev::Usage { cached: 3, .. }));
+    }
+
+    #[test]
     fn parses_usage_and_done() {
         let evs = parse_chunk(
             r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":64}}}"#,
@@ -286,5 +359,35 @@ mod tests {
         // line so "data: ok" is its own SSE field
         let out = s.feed(b"\ndata: ok\n\n");
         assert_eq!(out, vec!["ok".to_string()]);
+    }
+
+    #[test]
+    fn sse_ignores_non_data_fields_and_picks_up_later_events() {
+        let mut s = Sse::default();
+        // comments and `event:` lines carry no payload; the block is consumed
+        assert!(s.feed(b": keepalive\nevent: ping\n\n").is_empty());
+        // ...but the stream keeps working afterwards
+        assert_eq!(
+            s.feed(b"data: one\ndata: two\n\n"),
+            vec!["one\ntwo".to_string()]
+        );
+    }
+
+    #[test]
+    fn sse_waits_for_a_complete_boundary() {
+        let mut s = Sse::default();
+        // no blank line yet -> nothing emitted, not even on a lone \n
+        assert!(s.feed(b"data: {\"a\":1}").is_empty());
+        assert!(s.feed(b"\n").is_empty());
+        assert_eq!(s.feed(b"\n"), vec![r#"{"a":1}"#.to_string()]);
+
+        // a CRLF boundary split across chunks is still recognised
+        let mut s = Sse::default();
+        assert!(s.feed(b"data: x\r\n").is_empty());
+        assert_eq!(s.feed(b"\r\n"), vec!["x".to_string()]);
+
+        // whitespace after `data:` is a single optional space, extra is kept? no: trimmed
+        let mut s = Sse::default();
+        assert_eq!(s.feed(b"data:   padded\n\n"), vec!["padded".to_string()]);
     }
 }
