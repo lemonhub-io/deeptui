@@ -36,6 +36,10 @@ deeptui --version       # deeptui 0.1.0-beta
 ragent --version        # deeptui 0.1.0-beta, if the old binary was migrated
 ```
 
+On Linux, configuration and data follow `XDG_CONFIG_HOME` and `XDG_DATA_HOME`
+(with `~/.config` and `~/.local/share` as defaults). On macOS, both use
+`~/Library/Application Support`, matching the application’s native directories.
+
 The legacy source files remain in place for user reference. Existing DeepTUI
 configuration always wins. Do not run an old binary from another directory;
 remove that copy through its original package manager or deployment system.

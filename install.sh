@@ -316,9 +316,19 @@ copy_legacy_file() { # old path, new path; an existing destination always wins
   rm -f "$copy_file"
 }
 
+# Match the native directories used by the Rust dirs crate. macOS uses
+# Application Support for both config and data, rather than XDG paths.
+legacy_root() { # platform, user home, XDG/default path
+  case "$1" in
+    macos) printf '%s/Library/Application Support\n' "$2" ;;
+    *) printf '%s\n' "$3" ;;
+  esac
+}
+
 migrate_legacy() {
-  local config_root="${XDG_CONFIG_HOME:-$HOME/.config}"
-  local data_root="${XDG_DATA_HOME:-$HOME/.local/share}"
+  local config_root data_root
+  config_root="$(legacy_root "$os_name" "$HOME" "${XDG_CONFIG_HOME:-$HOME/.config}")"
+  data_root="$(legacy_root "$os_name" "$HOME" "${XDG_DATA_HOME:-$HOME/.local/share}")"
   copy_legacy_file "$config_root/ragent/config.toml" "$config_root/deeptui/config.toml"
   copy_legacy_file "$data_root/ragent/stats.tsv" "$data_root/deeptui/stats.tsv"
 

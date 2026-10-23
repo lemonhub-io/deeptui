@@ -114,6 +114,18 @@ if [ -n "$destination" ]; then cp "$asset" "$destination"; fi
         model_env['DEEPTUI_MODEL'] = 'new-model'
         self.assertEqual(subprocess.check_output([str(self.bin / 'ragent'), '--test-model'], env=model_env, text=True).strip(), 'new-model')
 
+    def test_native_macos_paths_match_the_application(self):
+        installer = INSTALLER.read_text()
+        definition = installer[installer.index('legacy_root()'):installer.index('migrate_legacy()')]
+        script = definition + '\nlegacy_root "$1" "$2" "$3"'
+        test_home = str(self.root / 'user home')
+        for platform, expected in [('macos', test_home + '/Library/Application Support'),
+                                   ('linux', str(self.config))]:
+            with self.subTest(platform=platform):
+                result = subprocess.check_output(['bash', '-c', script, 'legacy-root-test',
+                                                  platform, test_home, str(self.config)], text=True)
+                self.assertEqual(result.strip(), expected)
+
     def test_existing_settings_and_stats_are_preserved(self):
         self.legacy_files()
         for path, text in [(self.config / 'deeptui/config.toml', 'model = "new-model"\n'),
