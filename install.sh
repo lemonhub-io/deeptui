@@ -15,11 +15,12 @@ set -euo pipefail
 REPO="lemonhub-io/deeptui"
 BIN="deeptui"
 INSTALLER_VERSION="0.1.0-beta"
+REQUIRED_TAG="v0.1.0-beta"
 RELEASE_BASE="https://github.com/$REPO/releases"
 
 # Flags / env defaults. DEEPTUI_VERSION pins the release tag; DEEPTUI_INSTALL_DIR
 # overrides the target directory (same as --bin-dir).
-tag="${DEEPTUI_VERSION:-latest}"
+tag="${DEEPTUI_VERSION:-$REQUIRED_TAG}"
 bin_dir="${DEEPTUI_INSTALL_DIR:-}"
 prefix=""
 target=""
@@ -55,7 +56,7 @@ ${c_bold}DeepTUI installer${c_off} $INSTALLER_VERSION
 Usage: install.sh [options]
 
 Options:
-  -t, --tag TAG        Release tag to install (default: latest, e.g. --tag v0.1.0-beta)
+  -t, --tag TAG        Required release (default: v0.1.0-beta; retired tags are rejected)
   -b, --bin-dir DIR    Install the binary into DIR
       --prefix DIR     Install into DIR/bin (default: ~/.local, or /usr/local as root)
       --target TRIPLE  Force a release target triple (e.g. x86_64-unknown-linux-gnu)
@@ -187,30 +188,15 @@ has_avx2() {
 
 # ------------------------------------------------------------ resolution -----
 
-tag_is_latest() { [ "$tag" = latest ]; }
-
+# The old ragent version sequence was retired. GitHub's /latest endpoint
+# excludes prereleases, so resolve this supported beta explicitly.
 resolve_tag() {
-  tag_is_latest || {
-    case "$tag" in v*) ;; *) tag="v$tag" ;; esac
-    return 0
-  }
-
-  # GitHub redirects /releases/latest → /releases/tag/vX.Y.Z: no API rate limit.
-  if have curl; then
-    url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$RELEASE_BASE/latest" 2>/dev/null || true)"
-    case "$url" in */tag/*) tag="${url##*/}" ;; esac
-  fi
-  if tag_is_latest && have wget; then
-    url="$(wget -qO- --max-redirect=0 --server-response "$RELEASE_BASE/latest" 2>&1 |
-      sed -n 's/^ *[Ll]ocation: *\([^ ]*\).*/\1/p' | tail -1 || true)"
-    case "$url" in */tag/*) tag="${url##*/}" ;; esac
-  fi
-  if tag_is_latest; then # last resort: the API (60 req/h per IP)
-    url="$(fetch_stdout "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null || true)"
-    tag="$(printf '%s\n' "$url" | sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p' | head -1)"
-  fi
-  tag_is_latest && die "cannot determine the latest release tag — pass --tag vX.Y.Z"
-  step "latest release: $tag"
+  case "$tag" in
+    latest) tag="$REQUIRED_TAG" ;;
+    v*) ;;
+    *) tag="v$tag" ;;
+  esac
+  [ "$tag" = "$REQUIRED_TAG" ] || die "$tag is unsupported. All previous versions are retired; install $REQUIRED_TAG."
 }
 
 asset_name() {
@@ -228,18 +214,15 @@ verify_asset() { # file, asset name
     return 0
   fi
   if ! download "$RELEASE_BASE/download/$tag/SHA256SUMS.txt" "$tmp/SHA256SUMS.txt" 2>/dev/null; then
-    warn "SHA256SUMS.txt is unavailable for $tag — cannot verify the download"
-    return 0
+    die "SHA256SUMS.txt is unavailable for $tag — refusing an unverified download"
   fi
   want="$(sed -n "s/^\([0-9a-fA-F]\{64\}\)[[:space:]]\{1,\}$2\$/\1/p" "$tmp/SHA256SUMS.txt" | head -1)"
   if [ -z "$want" ]; then
-    warn "no checksum listed for $2 — cannot verify the download"
-    return 0
+    die "no checksum listed for $2 — refusing an unverified download"
   fi
   got="$(sha256_of "$1")"
   if [ -z "$got" ]; then
-    warn "no sha256sum/shasum/openssl available — cannot verify the download"
-    return 0
+    die "no sha256sum/shasum/openssl available — cannot verify the download"
   fi
   if [ "$got" != "$want" ]; then
     die "checksum mismatch for $2
@@ -255,12 +238,13 @@ refusing to install an unverified binary (pre-existing install left untouched)"
 smoke_test() { # rejects binaries that cannot run on this machine at all
   if out="$("$1" --version 2>&1)"; then
     case "$out" in
-      "$BIN "*) ok "smoke test: $out" ;;
-      *) warn "unexpected --version output: $out" ;;
+      "$BIN ${tag#v}") ok "smoke test: $out" ;;
+      *) die "expected $BIN ${tag#v}, received: $out — refusing to install" ;;
     esac
     return 0
+  else
+    status=$?
   fi
-  status=$?
   if [ "$status" -ge 128 ]; then
     warn "$(basename "$1") died from signal $((status - 128)) on this machine"
     warn "release binaries need x86-64-v3 (AVX2/BMI2/FMA, Haswell 2013+ / Excavator 2015+)"
@@ -307,6 +291,60 @@ install_bin() { # candidate binary path
     [ -n "$(xattr "$dst" 2>/dev/null | grep -x com.apple.quarantine || true)" ]; then
     xattr -d com.apple.quarantine "$dst" 2>/dev/null || true
   fi
+}
+
+# ------------------------------------------------------------ migration ------
+
+copy_legacy_file() { # old path, new path; an existing destination always wins
+  local old_file="$1" new_file="$2" copy_file
+  [ -f "$old_file" ] && [ ! -e "$new_file" ] || return 0
+  mkdir -p "$(dirname "$new_file")"
+  copy_file="$(mktemp "$(dirname "$new_file")/.migrate.XXXXXX")"
+  chmod 600 "$copy_file"
+  if ! cp "$old_file" "$copy_file"; then
+    rm -f "$copy_file"
+    die "could not migrate $old_file"
+  fi
+  # A hard link creates the destination atomically without replacing a config
+  # another process created while we copied. Both paths are in the same dir.
+  if ln "$copy_file" "$new_file" 2>/dev/null; then
+    ok "migrated $old_file → $new_file"
+  elif [ ! -e "$new_file" ]; then
+    rm -f "$copy_file"
+    die "could not migrate $old_file to $new_file"
+  fi
+  rm -f "$copy_file"
+}
+
+migrate_legacy() {
+  local config_root="${XDG_CONFIG_HOME:-$HOME/.config}"
+  local data_root="${XDG_DATA_HOME:-$HOME/.local/share}"
+  copy_legacy_file "$config_root/ragent/config.toml" "$config_root/deeptui/config.toml"
+  copy_legacy_file "$data_root/ragent/stats.tsv" "$data_root/deeptui/stats.tsv"
+
+  local legacy="$bin_dir/ragent" legacy_version shim
+  [ -x "$legacy" ] || return 0
+  legacy_version="$("$legacy" --version 2>/dev/null || true)"
+  case "$legacy_version" in
+    "ragent 0.1.0"|"ragent 0.2.0"|"ragent 0.3.0"|"ragent 0.4.0"|"ragent 0.5.0"|"ragent 0.6.0") ;;
+    *) return 0 ;;
+  esac
+  shim="$(mktemp "$bin_dir/.ragent.migrate.XXXXXX")"
+  cat > "$shim" <<'SH'
+#!/bin/sh
+# DeepTUI legacy launcher: the retired ragent binary has been replaced.
+[ -n "${DEEPTUI_API_KEY:-}" ] || export DEEPTUI_API_KEY="${RAGENT_API_KEY:-}"
+[ -n "${DEEPTUI_BASE_URL:-}" ] || export DEEPTUI_BASE_URL="${RAGENT_BASE_URL:-}"
+[ -n "${DEEPTUI_MODEL:-}" ] || export DEEPTUI_MODEL="${RAGENT_MODEL:-}"
+[ -n "${DEEPTUI_MAP_BYTES:-}" ] || export DEEPTUI_MAP_BYTES="${RAGENT_MAP_BYTES:-}"
+[ -n "${DEEPTUI_STATS_FILE:-}" ] || export DEEPTUI_STATS_FILE="${RAGENT_STATS_FILE:-}"
+[ -n "${DEEPTUI_NO_UPDATE_CHECK:-}" ] || export DEEPTUI_NO_UPDATE_CHECK="${RAGENT_NO_UPDATE_CHECK:-}"
+entry_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+exec "$entry_dir/deeptui" "$@"
+SH
+  chmod 755 "$shim"
+  mv -f "$shim" "$legacy"
+  ok "replaced $legacy_version with a launcher for $BIN ${REQUIRED_TAG#v}"
 }
 
 # ---------------------------------------------------------------- source -----
@@ -429,6 +467,10 @@ do_uninstall() {
   [ -e "$dst" ] || die "no $BIN at $dst — pass --prefix/--bin-dir if it lives elsewhere"
   rm -f "$dst"
   ok "removed $dst"
+  if [ -f "$bin_dir/ragent" ] && grep -qF '# DeepTUI legacy launcher:' "$bin_dir/ragent"; then
+    rm -f "$bin_dir/ragent"
+    ok "removed the legacy ragent launcher"
+  fi
   if [ -n "${HOME:-}" ]; then
     step "left in place: ${XDG_CONFIG_HOME:-$HOME/.config}/deeptui (config)"
     step "                ${XDG_DATA_HOME:-$HOME/.local/share}/deeptui (usage stats)"
@@ -516,7 +558,7 @@ main() {
   detect_platform
 
   if [ "$os_name" = windows ]; then
-    die "Windows: grab deeptui-<tag>-x86_64-pc-windows-msvc.zip from $RELEASE_BASE/latest and put deeptui.exe on PATH"
+    die "Windows: grab deeptui-<tag>-x86_64-pc-windows-msvc.zip from $RELEASE_BASE/tag/$REQUIRED_TAG and put deeptui.exe on PATH"
   fi
   if [ -z "$target" ] && [ "$from_source" -eq 0 ]; then
     if [ -z "$source_dir" ] && [ -z "$script_dir" ]; then
@@ -583,6 +625,7 @@ main() {
     install_bin "$cand"
   fi
 
+  migrate_legacy
   path_hint
   printf '\n'
   printf '%s%s is ready.%s Run it with: %s%s%s\n' "$c_bold" "$BIN" "$c_off" "$c_bold" "$bin_dir/$BIN" "$c_off"

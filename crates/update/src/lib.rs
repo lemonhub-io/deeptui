@@ -2,7 +2,7 @@
 //! platform, verify it, smoke-test it, and swap the running binary atomically.
 //!
 //! Guarantees, in the order they are enforced by [`apply`]:
-//! 1. the tag is newer than the running one, and a binary exists for this CPU;
+//! 1. the tag is the supported release, and a binary exists for this CPU;
 //! 2. the download's SHA-256 matches the one listed in the release's
 //!    `SHA256SUMS.txt` (our own SHA-256, so no crypto dependency);
 //! 3. the extracted binary runs here and reports the version we asked for;
@@ -17,10 +17,14 @@ use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Release assets live in `lemonhub-io/deeptui`: the API reports the newest tag
-/// and `/releases/latest` (redirect) is the rate-limit-proof fallback.
+/// The only supported release after retiring the ragent version sequence.
+pub const REQUIRED_TAG: &str = "v0.1.0-beta";
+
+/// Resolve the supported beta explicitly: GitHub's latest-release endpoint
+/// excludes prereleases, and the old stable version numbers were higher.
 const RELEASES: &str = "https://github.com/lemonhub-io/deeptui/releases";
-const LATEST_API: &str = "https://api.github.com/repos/lemonhub-io/deeptui/releases/latest";
+const REQUIRED_API: &str =
+    "https://api.github.com/repos/lemonhub-io/deeptui/releases/tags/v0.1.0-beta";
 
 /// A completed check is trusted for this long — one round-trip per day.
 pub const CHECK_TTL: u64 = 24 * 60 * 60;
@@ -95,6 +99,24 @@ pub fn normalize_tag(tag: &str) -> Result<String> {
     } else {
         format!("v{t}")
     })
+}
+
+fn supported_tag(tag: &str) -> Result<String> {
+    let tag = normalize_tag(tag)?;
+    if tag != REQUIRED_TAG {
+        bail!("{tag} is unsupported: all previous versions are retired; install {REQUIRED_TAG}");
+    }
+    Ok(tag)
+}
+
+/// Compare identities across the version reset, rather than interpreting a
+/// migration from ragent 0.6.0 as a downgrade to DeepTUI 0.1.0-beta.
+fn needs_migration(current: &str, target: &str) -> bool {
+    target == REQUIRED_TAG && normalize_tag(current).ok().as_deref() != Some(REQUIRED_TAG)
+}
+
+fn binary_matches_tag(version: &str, tag: &str) -> bool {
+    normalize_tag(version).ok().as_deref() == Some(tag)
 }
 
 // ---------------------------------------------------------------- sha256 ----
@@ -394,29 +416,30 @@ pub fn client(timeout: Duration) -> Result<reqwest::Client> {
         .build()?)
 }
 
-/// Tag of the latest release. The API answers directly; when it rate-limits
-/// anonymous callers (60/h/IP) the `/releases/latest` redirect is the fallback
-/// — no extra request either way, reqwest keeps the final URL.
+/// Resolve the required beta, with its release page as an API rate-limit
+/// fallback. A retired stable release can never become an update candidate.
 pub async fn latest_tag(http: &reqwest::Client) -> Result<String> {
-    if let Ok(r) = http.get(LATEST_API).send().await {
+    if let Ok(r) = http.get(REQUIRED_API).send().await {
         if r.status().is_success() {
             if let Ok(v) = r.json::<serde_json::Value>().await {
                 if let Some(t) = v.get("tag_name").and_then(|t| t.as_str()) {
-                    return normalize_tag(t);
+                    return supported_tag(t);
                 }
             }
         }
     }
     let r = http
-        .get(format!("{RELEASES}/latest"))
+        .get(format!("{RELEASES}/tag/{REQUIRED_TAG}"))
         .send()
         .await
         .context("cannot reach github.com")?;
-    let tag = r.url().path().rsplit('/').next().unwrap_or("").to_string();
-    if tag.is_empty() || tag == "latest" {
-        bail!("cannot determine the latest release tag");
+    if !r.status().is_success() {
+        bail!(
+            "required release {REQUIRED_TAG} is unavailable (HTTP {})",
+            r.status()
+        );
     }
-    normalize_tag(&tag)
+    supported_tag(r.url().path().rsplit('/').next().unwrap_or(""))
 }
 
 pub async fn fetch(http: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
@@ -449,10 +472,10 @@ pub async fn apply(http: &reqwest::Client, want: Option<&str>) -> Result<Outcome
     let cur = current_version();
     let exe = std::env::current_exe().context("cannot locate the running binary")?;
     let tag = match want {
-        Some(t) => normalize_tag(t)?,
+        Some(t) => supported_tag(t)?,
         None => latest_tag(http).await?,
     };
-    if !is_newer(cur, &tag) {
+    if !needs_migration(cur, &tag) {
         return Ok(Outcome::UpToDate(cur));
     }
     let triple = target_triple().context(
@@ -478,7 +501,7 @@ pub async fn apply(http: &reqwest::Client, want: Option<&str>) -> Result<Outcome
     let payload = extract(&asset, &bytes)?;
     let staged = stage(&exe, &payload)?;
     match smoke(&staged) {
-        Some(v) if parse_version(&v).0 == parse_version(&tag).0 => {}
+        Some(v) if binary_matches_tag(&v, &tag) => {}
         Some(v) => {
             let _ = std::fs::remove_file(&staged);
             bail!("{asset} reports deeptui {v} but the tag is {tag} — refusing to install");
@@ -513,8 +536,8 @@ pub async fn run(http: &reqwest::Client, want: Option<&str>) -> Result<()> {
     }
     match apply(http, want).await? {
         Outcome::UpToDate(v) => match want {
-            Some(t) => println!("✓ deeptui {v} is already at or past {t}"),
-            None => println!("✓ deeptui {v} is the latest release"),
+            Some(t) => println!("✓ deeptui {v} is the required release {t}"),
+            None => println!("✓ deeptui {v} is the required release"),
         },
         Outcome::Updated { from, to, path } => {
             println!("✓ updated deeptui {from} → {to} ({})", path.display());
@@ -582,13 +605,13 @@ pub fn write_cache(path: &Path, now: u64, tag: &str) {
 /// must not delay startup.
 pub fn cached_update() -> Option<String> {
     let tag = read_cache(&cache_path()?, now(), CHECK_TTL)?;
-    is_newer(current_version(), &tag).then_some(tag)
+    needs_migration(current_version(), &tag).then_some(tag)
 }
 
 /// One check per [`CHECK_TTL`]: the cached tag when it is fresh, otherwise a
 /// short-timeout lookup that refreshes the cache. `None` means "no update".
 pub async fn check(enabled: bool) -> Option<String> {
-    if !enabled {
+    if !enabled || !needs_migration(current_version(), REQUIRED_TAG) {
         return None;
     }
     let path = cache_path();
@@ -604,18 +627,18 @@ pub async fn check(enabled: bool) -> Option<String> {
             t
         }
     };
-    is_newer(current_version(), &tag).then_some(tag)
+    needs_migration(current_version(), &tag).then_some(tag)
 }
 
 /// `deeptui --check-update`: report and exit.
 pub async fn report(http: &reqwest::Client) -> Result<()> {
     let cur = current_version();
     let tag = latest_tag(http).await?;
-    if is_newer(cur, &tag) {
-        println!("deeptui {cur} → {tag} available");
+    if needs_migration(cur, &tag) {
+        println!("deeptui {cur} → {tag} required");
         println!("update with: deeptui --self-update");
     } else {
-        println!("deeptui {cur} is the latest release");
+        println!("deeptui {cur} is the required release");
     }
     Ok(())
 }
@@ -661,6 +684,35 @@ mod tests {
         assert_eq!(normalize_tag(" v0.1.0-beta ").unwrap(), "v0.1.0-beta");
         assert!(normalize_tag("").is_err());
         assert!(normalize_tag("latest").is_err());
+    }
+
+    #[test]
+    fn only_the_beta_can_be_an_install_or_update_target() {
+        assert_eq!(format!("v{}", current_version()), REQUIRED_TAG);
+        assert_eq!(supported_tag("0.1.0-beta").unwrap(), REQUIRED_TAG);
+        for tag in [
+            "v0.1.0", "v0.2.0", "v0.3.0", "v0.4.0", "v0.5.0", "v0.6.0", "v99.0.0",
+        ] {
+            assert!(supported_tag(tag).is_err(), "{tag} must be refused");
+            assert!(!needs_migration(current_version(), tag));
+        }
+    }
+
+    #[test]
+    fn version_reset_requires_migration_even_from_higher_retired_numbers() {
+        for current in ["0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0"] {
+            assert!(needs_migration(current, REQUIRED_TAG), "{current}");
+        }
+        assert!(!needs_migration("0.1.0-beta", REQUIRED_TAG));
+        assert!(!needs_migration(REQUIRED_TAG, REQUIRED_TAG));
+    }
+
+    #[test]
+    fn downloaded_binary_must_match_the_entire_prerelease_version() {
+        assert!(binary_matches_tag("0.1.0-beta", REQUIRED_TAG));
+        assert!(!binary_matches_tag("0.1.0", REQUIRED_TAG));
+        assert!(!binary_matches_tag("0.1.0-beta.1", REQUIRED_TAG));
+        assert!(!binary_matches_tag("0.6.0", REQUIRED_TAG));
     }
 
     #[test]
@@ -957,9 +1009,9 @@ mod tests {
         let p = t.join("u");
         std::env::set_var("DEEPTUI_UPDATE_CACHE", &p);
         assert_eq!(cache_path().as_deref(), Some(p.as_path()));
-        // a cached newer tag is what the banner and the check report
-        write_cache(&p, now(), "v99.0.0");
-        assert_eq!(cached_update().as_deref(), Some("v99.0.0"));
+        // Old release notifications must not promote a retired stable version.
+        write_cache(&p, now(), "v0.6.0");
+        assert!(cached_update().is_none());
         write_cache(&p, now(), &format!("v{}", current_version()));
         assert!(
             cached_update().is_none(),

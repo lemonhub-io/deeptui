@@ -111,13 +111,24 @@ jobs:
           ### Install
 
           \`\`\`sh
-          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/install.sh | bash -s -- --tag ${{ github.ref_name }}
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/install.sh | bash
           \`\`\`
 
           Binaries: linux x86_64 (gnu + static musl), linux-aarch64, macOS
           x86_64/aarch64, Windows x86_64. The installer picks the right one for
           your platform and verifies it against \`SHA256SUMS.txt\`.
           Verify manually with: \`sha256sum -c SHA256SUMS.txt\`
+
+          ### Required migration from ragent
+
+          All previous releases are retired. Existing users must reinstall using
+          the command above; the old updater interprets the version reset as a
+          downgrade and cannot perform this migration. The installer preserves
+          configuration and usage history and replaces a retired ragent binary
+          in the install directory with a launcher for DeepTUI.
+
+          Previously downloaded binaries have no remote enforcement mechanism;
+          users or their device administrators must run the installer.
           EOF
       - name: release
         env:

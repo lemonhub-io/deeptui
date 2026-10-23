@@ -19,6 +19,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
+      - run: python3 -m unittest discover -s tests -p 'test_*.py'
 
   build:
     name: build ${{ matrix.os }}

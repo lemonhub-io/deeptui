@@ -9,7 +9,8 @@ use deeptui_core::Tariff;
 use deeptui_provider::Endpoint;
 use deeptui_repomap as repomap;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize, Default)]
 struct FileCfg {
@@ -164,16 +165,34 @@ pub fn config_path() -> Option<PathBuf> {
 
 pub fn write_example() -> Result<()> {
     let p = config_path().context("no config dir")?;
+    write_example_at(&p)
+}
+
+fn write_example_at(p: &Path) -> Result<()> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d)?;
     }
-    std::fs::write(
-        &p,
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = match options.open(p) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            println!("kept existing {}", p.display());
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    file.write_all(
         "# DeepTUI config — all fields optional, env vars take precedence over this file,\n\
          # CLI flags take precedence over env vars.\n\
          # api_key = \"sk-...\"\n\
          # base_url = \"https://api.deepseek.com/v1\"\n\
-         # model = \"deepseek-chat\"\n\
+         # model = \"deepseek-flash\"\n\
          # context_budget = 60000\n\
          # max_output_tokens = 8192\n\
          # bash_timeout_ms = 30000\n\
@@ -182,7 +201,8 @@ pub fn write_example() -> Result<()> {
          # price_cached = 0.003\n\
          # use_map = true\n\
          # map_bytes = 5000   # repo map size in bytes\n\
-         # update_check = true   # look for a newer release once a day\n",
+         # update_check = true   # look for the required release once a day\n"
+            .as_bytes(),
     )?;
     println!("wrote {}", p.display());
     Ok(())
@@ -191,6 +211,35 @@ pub fn write_example() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deeptui_testkit::TmpDir;
+
+    #[test]
+    fn initialization_preserves_existing_credentials_and_settings() {
+        let t = TmpDir::new("config-init-existing");
+        let p = t.join("config.toml");
+        let original = "api_key = \"test-key\"\nmodel = \"custom-model\"\n";
+        std::fs::write(&p, original).unwrap();
+        write_example_at(&p).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
+    }
+
+    #[test]
+    fn initialization_creates_a_private_example_config() {
+        let t = TmpDir::new("config-init-new");
+        let p = t.join("nested/config.toml");
+        write_example_at(&p).unwrap();
+        assert!(std::fs::read_to_string(&p)
+            .unwrap()
+            .contains("deepseek-flash"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
 
     fn flags<'a>(
         model: &'a str,

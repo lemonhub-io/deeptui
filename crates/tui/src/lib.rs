@@ -94,14 +94,19 @@ async fn run_ui(
     late_update: impl Future<Output = Option<String>>,
 ) -> Result<()> {
     let mut app = App::new(intro.model.clone());
+    app.root = intro.root.display().to_string();
+    app.context_budget = intro.context_budget;
+    app.motion = std::env::var_os("DEEPTUI_REDUCED_MOTION")
+        .is_none_or(|value| value.is_empty() || value == "0");
     app.update = intro.update.clone();
     draw::banner(&mut app.feed, &intro);
 
     let mut late_update = std::pin::pin!(late_update);
     let mut checked = false;
     let mut keys = EventStream::new();
-    let mut tick = tokio::time::interval(Duration::from_millis(300));
+    let mut tick = tokio::time::interval(Duration::from_millis(80));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    term.draw(|f| draw::render(f, &mut app))?;
 
     loop {
         tokio::select! {
@@ -112,8 +117,9 @@ async fn run_ui(
                     MouseEventKind::ScrollUp => app.feed.scroll_by(-3),
                     MouseEventKind::ScrollDown => {
                         app.feed.scroll_by(3);
-                        let h = term.size().map(|s| s.height as usize).unwrap_or(24);
-                        app.feed.refollow(h.saturating_sub(4));
+                        let area = term.size().map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height)).unwrap_or_default();
+                        let chat = draw::regions(area, &app.editor.text)[1];
+                        app.feed.refollow(chat.height as usize);
                     }
                     _ => {}
                 },
@@ -131,7 +137,7 @@ async fn run_ui(
                 // the session died or closed the stream
                 None => app.agent_gone(),
             },
-            _ = tick.tick() => {}
+            _ = tick.tick(), if app.meter.running && app.motion => {}
             tag = &mut late_update, if !checked => {
                 checked = true;
                 if let Some(tag) = tag {

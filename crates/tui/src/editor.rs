@@ -158,20 +158,36 @@ impl Editor {
 
 /// Wrapped row count of the input at inner width `w`.
 pub(crate) fn input_rows(input: &str, w: usize) -> usize {
-    let w = w.max(1);
-    input
-        .split('\n')
-        .map(|l| {
-            let lw: usize = l
-                .chars()
-                .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
-                .sum();
-            (lw / w) + 1
-        })
-        .sum()
+    cursor_pos(input, w).0 + 1
 }
 
-/// (row, col) in wrapped coordinates of a prefix of `input` (used for cursor).
+/// Hard wrap the composer exactly as the cursor does. Word wrapping would move
+/// text to a different row from its cursor, especially around wide characters.
+pub(crate) fn input_lines(input: &str, w: usize) -> Vec<String> {
+    let w = w.max(1);
+    let mut lines = vec![String::new()];
+    let mut col = 0;
+    for c in input.chars() {
+        if c == '\n' {
+            lines.push(String::new());
+            col = 0;
+            continue;
+        }
+        let width = UnicodeWidthChar::width(c).unwrap_or(0);
+        if width > 0 && col > 0 && col + width > w {
+            lines.push(String::new());
+            col = 0;
+        }
+        lines.last_mut().unwrap().push(c);
+        col += width;
+    }
+    if col >= w {
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// (row, col) in wrapped coordinates of a prefix of `input`.
 pub(crate) fn cursor_pos(prefix: &str, w: usize) -> (usize, usize) {
     let w = w.max(1);
     let (mut row, mut col) = (0usize, 0usize);
@@ -180,14 +196,19 @@ pub(crate) fn cursor_pos(prefix: &str, w: usize) -> (usize, usize) {
             row += 1;
             col = 0;
         } else {
-            col += UnicodeWidthChar::width(c).unwrap_or(0);
-            if col >= w {
+            let width = UnicodeWidthChar::width(c).unwrap_or(0);
+            if width > 0 && col > 0 && col + width > w {
                 row += 1;
                 col = 0;
             }
+            col += width;
         }
     }
-    (row, col)
+    if col >= w {
+        (row + 1, 0)
+    } else {
+        (row, col)
+    }
 }
 
 /// Byte offset where the word ending `s` starts, skipping trailing whitespace
@@ -233,6 +254,23 @@ mod tests {
         assert_eq!(cursor_pos("a\nb", 10), (1, 1));
         assert_eq!(cursor_pos("汉字汉字汉", 10), (1, 0));
         assert_eq!(cursor_pos("abc", 0), (3, 0));
+    }
+
+    #[test]
+    fn composer_wrapping_keeps_words_wide_characters_and_cursor_in_step() {
+        assert_eq!(input_lines("ab cd ef", 5), ["ab cd", " ef"]);
+        assert_eq!(input_lines("abcd界z", 5), ["abcd", "界z"]);
+        assert_eq!(cursor_pos("abcd界z", 5), (1, 3));
+        assert_eq!(input_lines("12345\nZ", 5), ["12345", "Z"]);
+        assert_eq!(cursor_pos("12345\nZ", 5), (1, 1));
+        assert_eq!(input_lines("12345\u{301}", 5), ["12345\u{301}", ""]);
+        for width in 2..24 {
+            for text in ["", "hello world", "ab界cd界ef", "first\n\nlast", "12345\nZ"] {
+                let lines = input_lines(text, width);
+                assert_eq!(lines.len(), input_rows(text, width), "{text:?} at {width}");
+                assert_eq!(lines.len() - 1, cursor_pos(text, width).0);
+            }
+        }
     }
 
     #[test]

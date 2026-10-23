@@ -6,4 +6,6 @@ cd "$(dirname "$0")"
 # --branch master matches the project's production branch, so this always
 # publishes to production rather than a preview alias.
 cp index.html dist/index.html
+mkdir -p dist/assets
+cp assets/styles.css assets/site.js dist/assets/
 wrangler pages deploy dist --project-name deeptui --branch master --commit-dirty=true "$@"

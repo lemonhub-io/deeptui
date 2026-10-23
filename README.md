@@ -10,8 +10,11 @@ than the others. See [REPORT.md](REPORT.md).
 
 ## Install
 
+**Required release: v0.1.0-beta.** All ragent releases from v0.1.0 through
+v0.6.0 are retired. Existing users must reinstall; see [MIGRATION.md](MIGRATION.md).
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/lemonhub-io/deeptui/master/install.sh | bash -s -- --tag v0.1.0-beta
+curl -fsSL https://raw.githubusercontent.com/lemonhub-io/deeptui/v0.1.0-beta/install.sh | bash
 ```
 
 `install.sh` detects the OS/CPU, downloads the matching release asset
@@ -38,7 +41,7 @@ Environment overrides: `DEEPTUI_VERSION`, `DEEPTUI_INSTALL_DIR`.
 ## Updating
 
 ```sh
-deeptui --self-update             # fetch, verify and swap in the newest release
+deeptui --self-update             # install the required supported release
 deeptui --check-update            # just report, don't touch anything
 deeptui --self-update --update-tag v0.1.0-beta   # pin a tag
 ```
@@ -51,11 +54,17 @@ update can never leave a half-written binary. It needs write access to the
 directory holding the binary (not the binary itself), and takes effect on the
 next start.
 
-The TUI also checks once a day in the background and shows a line in the
-startup card (`▸ update v0.1.0-beta available — deeptui --self-update`). The answer is
-cached in `$XDG_DATA_HOME/deeptui/update-check`, so at most one request a day;
-disable it with `update_check = false` in `config.toml`,
-`DEEPTUI_NO_UPDATE_CHECK=1`, or `--no-update-check`.
+The installer and updater accept only `v0.1.0-beta`, including the complete
+prerelease suffix. The `latest` installer alias resolves to this beta explicitly;
+GitHub's stable-only `/latest` endpoint is not used. Cached notifications for
+retired releases are ignored. A client already on the required beta skips the
+background lookup.
+
+Previously downloaded ragent binaries have optional update checks and no remote
+kill switch. They cannot be remotely forced to upgrade. The supported migration
+is to rerun the installer, which preserves existing DeepTUI settings, copies
+legacy config and usage stats when the destination is absent, and replaces a
+recognized retired `ragent` in the install directory with a DeepTUI launcher.
 
 ## Quickstart
 
@@ -142,13 +151,21 @@ prints exactly what gets injected (`--no-map` / `use_map = false` disables it).
 
 ## TUI
 
-Soft blue accents with a navy status bar · boxed startup card
-(model/root/context/lifetime stats) · markdown rendering in assistant output
+Deep navy surfaces with ice-blue accents · persistent session header
+(project/model/context/state) · welcome view with lifetime stats · padded,
+multiline prompt composer · responsive cost and token counters · markdown rendering in assistant output
 (ATX headings, fenced and indented code with a `▎` gutter,
 inline `` `code` `` / `**bold**` / `*italic*` / `~~strike~~` / links, bullets and
 ordered lists with hanging indents, blockquotes, `---` rules and boxed pipe
 tables) · `❯`/`●`/`◆` turn markers · braille activity line
-while running · segmented status bar with a `▲ scrolled` indicator.
+while running · breathing composer border and moving activity rail · compact
+status bar with a `▲ scrolled` indicator. Idle sessions do not redraw on a timer.
+Set `DEEPTUI_REDUCED_MOTION=1` for a static activity indicator and border.
+
+The landing page uses the same palette, a scripted interactive terminal preview,
+keyboard-accessible tabs, installation commands, and a motion toggle. It also
+respects the system's reduced-motion setting. Preview it locally with
+`python3 -m http.server 8765`, then open `http://localhost:8765`.
 
 ### TUI keys
 
