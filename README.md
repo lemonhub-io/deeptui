@@ -1,27 +1,27 @@
-# ragent
+# DeepTUI
 
 A lean AI coding agent in Rust. Every design decision optimizes two things:
 **API cost** and **speed**. 5.6 MB binary, ~5 ms startup, ~4 MB RSS.
 
 In a controlled benchmark against Codex CLI, Grok CLI, and Pi — same model
-(`deepseek-flash`), same tasks, proxy-measured billing data — ragent solved
+(`deepseek-flash`), same tasks, proxy-measured billing data — DeepTUI solved
 8/8 tasks at **$0.0011 per successful task**, ~3–62× cheaper and ~2–18× faster
 than the others. See [REPORT.md](REPORT.md).
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/lemonhub-io/ragent/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lemonhub-io/deeptui/master/install.sh | bash -s -- --tag v0.1.0-beta
 ```
 
 `install.sh` detects the OS/CPU, downloads the matching release asset
-(`ragent-vX.Y.Z-<target>.tar.gz`), verifies its SHA-256 against the release's
+(`deeptui-vX.Y.Z-<target>.tar.gz`), verifies its SHA-256 against the release's
 `SHA256SUMS.txt`, smoke-tests it, then installs atomically — an interrupted or
 failed download never replaces a working binary. It installs to `~/.local/bin`
 (`/usr/local/bin` as root, no sudo needed otherwise).
 
 ```sh
-install.sh --tag v0.3.0          # pin a release
+install.sh --tag v0.1.0-beta          # pin a release
 install.sh --from-source         # build with cargo (no prebuilt / exotic CPU)
 install.sh --prefix /usr/local   # custom prefix (--bin-dir DIR for the exact dir)
 install.sh --modify-path         # append the install dir to your shell rc
@@ -33,42 +33,42 @@ install.sh --help                # all options
 Prebuilt targets: Linux x86_64 (static musl) and aarch64, macOS x86_64/arm64,
 Windows x86_64 (`.zip`; on Windows the script prints the asset to grab).
 Anything else, or an x86 CPU without AVX2, falls back to `--from-source`.
-Environment overrides: `RAGENT_VERSION`, `RAGENT_INSTALL_DIR`.
+Environment overrides: `DEEPTUI_VERSION`, `DEEPTUI_INSTALL_DIR`.
 
 ## Updating
 
 ```sh
-ragent --self-update             # fetch, verify and swap in the newest release
-ragent --check-update            # just report, don't touch anything
-ragent --self-update --update-tag v0.6.0   # pin a tag
+deeptui --self-update             # fetch, verify and swap in the newest release
+deeptui --check-update            # just report, don't touch anything
+deeptui --self-update --update-tag v0.1.0-beta   # pin a tag
 ```
 
 `--self-update` is the same release path as the installer, done in-process:
 the asset for this platform is downloaded, its SHA-256 is checked against the
 release's `SHA256SUMS.txt`, the binary is run once (`--version` must match the
-tag), and only then is it `rename`d over the running `ragent` — an interrupted
+tag), and only then is it `rename`d over the running `deeptui` — an interrupted
 update can never leave a half-written binary. It needs write access to the
 directory holding the binary (not the binary itself), and takes effect on the
 next start.
 
 The TUI also checks once a day in the background and shows a line in the
-startup card (`▸ update v0.6.0 available — ragent --self-update`). The answer is
-cached in `$XDG_DATA_HOME/ragent/update-check`, so at most one request a day;
+startup card (`▸ update v0.1.0-beta available — deeptui --self-update`). The answer is
+cached in `$XDG_DATA_HOME/deeptui/update-check`, so at most one request a day;
 disable it with `update_check = false` in `config.toml`,
-`RAGENT_NO_UPDATE_CHECK=1`, or `--no-update-check`.
+`DEEPTUI_NO_UPDATE_CHECK=1`, or `--no-update-check`.
 
 ## Quickstart
 
 ```sh
-export RAGENT_API_KEY=sk-...        # or OPENAI_API_KEY
-ragent                              # TUI
-ragent "fix the bug in src/api.rs"  # headless
-git diff | ragent "review this"     # piped stdin
-ragent --dump-map                   # print the injected repo map, no API call
+export DEEPTUI_API_KEY=sk-...        # or OPENAI_API_KEY
+deeptui                              # TUI
+deeptui "fix the bug in src/api.rs"  # headless
+git diff | deeptui "review this"     # piped stdin
+deeptui --dump-map                   # print the injected repo map, no API call
 ```
 
 From a checkout instead: `cargo build --release`, then use
-`./target/release/ragent` in place of `ragent` above.
+`./target/release/deeptui` in place of `deeptui` above.
 
 **Build note (Linux):** `.cargo/config.toml` links with [mold](https://github.com/rui314/mold)
 (`apt install mold`) — ~5x faster rebuild-relink locally (11s vs 57s for the
@@ -91,38 +91,38 @@ stripped; dev = `line-tables-only` debug info; single-thread tokio runtime
 
 | Lever | Where |
 |---|---|
-| ~120-token system prompt | `agent.rs::SYSTEM` |
-| Terse tool schemas (every word is billed each round) | `tools.rs::specs` |
-| `edit_file` = exact search/replace, never whole-file rewrites | `tools.rs::edit_file_sync` |
-| Hard caps on all tool output (lines/bytes/hits; truncation tells model how to page) | `tools.rs` consts |
-| Repo map injected once — file tree + symbol outlines, not file contents | `repomap.rs` |
-| Map budget (bytes) spent by file rank: entry points first, `...` for what is cut; every code file keeps a symbol floor | `repomap.rs::build` |
-| Auto-compaction: stale tool outputs → `[elided]`, then middle-history drop with tool-call orphan repair | `ctx.rs::compact` |
-| Stable message prefix for provider prompt caching; cached tokens shown (`⛁`) | `api.rs` |
-| Live $ meter from a price table (overridable in config) | `config.rs`, status bar |
-| Cache-hit input priced separately (DeepSeek hits are ~50x cheaper) + DeepSeek peak-window ×2 | `config.rs::cost` |
-| **Cost per successful task**: every run recorded to `~/.local/share/ragent/stats.tsv`; TUI shows `task $x` and session `$/✓`; headless prints task cost + lifetime average | `stats.rs` |
-| Assistant messages that ended in tool calls stay content-free; final answers capped at 8 lines by prompt rule | `agent.rs` |
+| ~120-token system prompt | `engine/src/prompt.rs::RULES` |
+| Terse tool schemas (every word is billed each round) | each `Tool` const in `tools/src` |
+| `edit_file` = exact search/replace, never whole-file rewrites | `tools/src/fs.rs::edit_file` |
+| Hard caps on all tool output (lines/bytes/hits; truncation tells model how to page) | `tools/src/{fs,search,shell}.rs` consts |
+| Repo map injected once — file tree + symbol outlines, not file contents | `deeptui-repomap` |
+| Map budget (bytes) spent by file rank: entry points first, `...` for what is cut; every code file keeps a symbol floor | `repomap/src/lib.rs::build` |
+| Auto-compaction: stale tool outputs → `[elided]`, then middle-history drop with tool-call orphan repair | `core/src/history.rs::compact` |
+| Stable message prefix for provider prompt caching; cached tokens shown (`⛁`) | `deeptui-provider` |
+| Live $ meter: usage is priced at the source, every view just sums | `core/src/tariff.rs`, `engine` |
+| Cache-hit input priced separately (DeepSeek hits are ~50x cheaper) + DeepSeek peak-window ×2 | `core/src/tariff.rs::cost` |
+| **Cost per successful task**: every run recorded to `~/.local/share/deeptui/stats.tsv`; TUI shows `task $x` and session `$/✓`; headless prints task cost + lifetime average | `core/src/ledger.rs`, `src/journal.rs` |
+| Assistant messages that ended in tool calls stay content-free; final answers capped at 8 lines by prompt rule | `core/src/turn.rs` |
 
 ## Speed levers
 
 | Lever | Where |
 |---|---|
-| SSE streaming to the UI per chunk | `api.rs::stream_chat` |
-| Batches of read-only tool calls (`read_file`/`grep`/`glob`/`ls`/`repomap`) execute concurrently via `JoinSet` | `agent.rs` |
-| Blocking file ops run in `spawn_blocking`; `ignore` crate walks respect `.gitignore` and skip `target`/`node_modules`/etc. | `tools.rs`, `repomap.rs` |
-| No tokenizer dependency — a 1-division char heuristic estimates tokens in O(n) with zero load time | `util.rs::est_tokens` |
-| Incremental scrollback wrap cache; only new lines rewrap, only visible lines materialize per frame | `tui.rs` |
+| SSE streaming to the UI per chunk | `provider/src/lib.rs::Completion` |
+| Tool calls run in waves derived from their declared effect: consecutive reads (`read_file`/`grep`/`glob`/`ls`/`repomap`) run concurrently, every write is a barrier | `core/src/schedule.rs`, `engine` |
+| Blocking file ops run in `spawn_blocking`; `ignore` crate walks respect `.gitignore` and skip `target`/`node_modules`/etc. | `deeptui-tools`, `deeptui-repomap` |
+| No tokenizer dependency — a 1-division char heuristic estimates tokens in O(n) with zero load time | `core/src/history.rs::est_tokens` |
+| Incremental scrollback wrap cache; only new lines rewrap, only visible lines materialize per frame | `tui/src/feed.rs` |
 | tokio `current_thread` runtime, `thin` LTO, `codegen-units=1`, stripped | `Cargo.toml` |
 
 ## Config
 
-Resolution order: CLI flag → env var (`RAGENT_API_KEY`, `RAGENT_BASE_URL`, `RAGENT_MODEL`, fallback `OPENAI_*`) → `~/.config/ragent/config.toml` → defaults. `ragent --init` writes a commented example.
+Resolution order: CLI flag → env var (`DEEPTUI_API_KEY`, `DEEPTUI_BASE_URL`, `DEEPTUI_MODEL`, fallback `OPENAI_*`) → `~/.config/deeptui/config.toml` → defaults. `deeptui --init` writes a commented example.
 
 Any **OpenAI-compatible** endpoint works: OpenAI, DeepSeek, OpenRouter, Ollama (`http://localhost:11434/v1`), vLLM, LM Studio…
 
 ```toml
-# ~/.config/ragent/config.toml
+# ~/.config/deeptui/config.toml
 api_key = "..."
 base_url = "https://api.deepseek.com/v1"
 model = "deepseek-flash"
@@ -134,16 +134,17 @@ price_input = 0.15
 price_output = 0.60
 price_cached = 0.003
 use_map = true               # inject the repo map into the system prompt
-map_bytes = 5000             # repo-map budget in bytes (env RAGENT_MAP_BYTES)
+map_bytes = 5000             # repo-map budget in bytes (env DEEPTUI_MAP_BYTES)
 ```
 
-See the map without spending a token: `ragent --dump-map [--map-bytes N]`
+See the map without spending a token: `deeptui --dump-map [--map-bytes N]`
 prints exactly what gets injected (`--no-map` / `use_map = false` disables it).
 
 ## TUI
 
-Boxed startup card (model/root/context/lifetime stats) · markdown rendering in
-assistant output (ATX headings, fenced and indented code with a `▎` gutter,
+Soft blue accents with a navy status bar · boxed startup card
+(model/root/context/lifetime stats) · markdown rendering in assistant output
+(ATX headings, fenced and indented code with a `▎` gutter,
 inline `` `code` `` / `**bold**` / `*italic*` / `~~strike~~` / links, bullets and
 ordered lists with hanging indents, blockquotes, `---` rules and boxed pipe
 tables) · `❯`/`●`/`◆` turn markers · braille activity line
@@ -167,23 +168,35 @@ output). File tools are confined to the project root; `bash` is your shell.
 
 ## Layout
 
+A Cargo workspace whose dependency graph is the architecture — every arrow
+points down, and the compiler enforces it:
+
 ```
-src/api.rs      OpenAI-compatible SSE client, retries, usage decode
-src/tools.rs    tool schemas + implementations, output caps
-src/ctx.rs      token estimation + two-stage compaction
-src/repomap.rs  repo skeleton builder: walk, rank, symbol outline, byte budget
-src/agent.rs    run loop, parallel tool dispatch, events
-src/tui.rs      ratatui UI: scrollback, input, status bar
-src/config.rs   config/env/CLI resolution + price table
-src/stats.rs    per-task cost accounting (stats.tsv)
-src/main.rs     CLI, headless mode
-bench/          benchmark harness, fixtures, and raw data (see REPORT.md)
+crates/core      deeptui-core: the pure domain — no IO, no async runtime, no clock.
+                 Transcript + compaction, the turn state machine, events,
+                 tariffs, the cost ledger, the effect scheduler
+crates/provider  OpenAI-compatible SSE client: retries, stall timeout, chunk decode
+crates/repomap   the project walk + ranked, byte-budgeted repo skeleton
+crates/tools     tools as data: name, schema, effect and implementation in one value
+crates/update    self-update: verify, smoke-test, atomic swap
+crates/engine    interprets the turn machine; the session actor; the system prompt
+crates/tui       ratatui frontend — feed, editor, meter, keymap, markdown
+crates/testkit   dev-only fixtures: temp roots, loopback HTTP stub
+src/             the composition root: settings, stats journal, headless frontend
+bench/           benchmark harness, fixtures, and raw data (see REPORT.md)
 ```
+
+How a turn flows: `deeptui_core::Turn` is a sans-IO state machine — it says
+what it needs next (`Next::Ask` a completion, `Next::Run` tool calls) and is
+fed what happened. The engine performs exactly that IO, prices usage, and pours
+the turn's `Event`s into the session's outlet. Every consumer is a fold over
+that one stream: the TUI, the headless console, the session ledger, the
+`stats.tsv` journal. Each turn ends with exactly one `Event::Finished(Receipt)`.
 
 ## Metrics
 
 Every run appends `ts model in out cached cost ok|fail` to
-`~/.local/share/ragent/stats.tsv` (override the path with `RAGENT_STATS_FILE`;
+`~/.local/share/deeptui/stats.tsv` (override the path with `DEEPTUI_STATS_FILE`;
 never written by the unit tests). Headless prints `[task ok] $x · ↑in ↓out
 ⛁cached · life $avg/✓`; the TUI status bar shows `task $x` and session
 `$/✓` live.

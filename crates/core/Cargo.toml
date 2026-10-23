@@ -1,0 +1,12 @@
+[package]
+name = "deeptui-core"
+description = "deeptui's pure domain: transcript, turn state machine, events, prices. No IO."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Deliberately tiny: no async runtime, no HTTP, no terminal, no filesystem.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

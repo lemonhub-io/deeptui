@@ -1,31 +1,28 @@
-mod agent;
-mod api;
-mod config;
-mod ctx;
-mod repomap;
-mod stats;
-mod tools;
-mod tui;
-mod types;
-mod update;
-mod util;
+//! DeepTUI — the composition root, and the only code that knows every crate.
+//!
+//! It resolves settings, builds an engine from its parts, taps the stats
+//! journal into the session, and hands the session to a frontend. No crate
+//! below it knows the others exist beyond what its manifest allows.
 
-#[cfg(test)]
-mod testutil;
+mod headless;
+mod journal;
+mod settings;
 
-use agent::AgentEvent;
 use anyhow::{bail, Result};
 use clap::Parser;
-use config::Config;
-use std::io::{IsTerminal, Read, Write};
-use std::sync::Arc;
-use std::time::Instant;
+use deeptui_core::{Event, Msg};
+use deeptui_engine::{system_prompt, Engine, Remote, Session};
+use deeptui_provider::Provider;
+use deeptui_tools::{Toolbox, Workspace};
+use journal::Journal;
+use settings::{Flags, Settings};
+use std::io::{IsTerminal, Read};
+use std::path::Path;
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
-/// ragent — a lean coding agent: extreme cost & speed optimization.
+/// DeepTUI — a lean coding agent: extreme cost & speed optimization.
 #[derive(Parser)]
-#[command(name = "ragent", version, about)]
+#[command(name = "deeptui", version, about)]
 struct Cli {
     /// Prompt. If given (or stdin is piped), runs headless and exits.
     #[arg(trailing_var_arg = true)]
@@ -71,194 +68,103 @@ struct Cli {
     no_update_check: bool,
 }
 
+impl Cli {
+    fn flags(&self) -> Flags<'_> {
+        Flags {
+            model: self.model.as_deref(),
+            base_url: self.base_url.as_deref(),
+            api_key: self.api_key.as_deref(),
+            budget: self.budget,
+            no_map: self.no_map,
+            map_bytes: self.map_bytes,
+            no_update_check: self.no_update_check,
+        }
+    }
+
+    /// The prompt words, plus whatever was piped in after them.
+    fn prompt(&self) -> String {
+        let mut prompt = self.prompt.join(" ");
+        if !std::io::stdin().is_terminal() {
+            let mut piped = String::new();
+            std::io::stdin().read_to_string(&mut piped).ok();
+            let piped = piped.trim_end();
+            if !piped.is_empty() {
+                prompt = if prompt.is_empty() {
+                    piped.to_string()
+                } else {
+                    format!("{prompt}\n\n{piped}")
+                };
+            }
+        }
+        prompt
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     // Self-update runs before any config is read: updating needs no API key.
     if cli.self_update || cli.check_update {
-        let http = update::client(std::time::Duration::from_secs(120))?;
+        let http = deeptui_update::client(std::time::Duration::from_secs(120))?;
         return if cli.check_update {
-            update::report(&http).await
+            deeptui_update::report(&http).await
         } else {
-            update::run(&http, cli.update_tag.as_deref()).await
+            deeptui_update::run(&http, cli.update_tag.as_deref()).await
         };
     }
     if cli.init {
-        return Config::write_example();
+        return settings::write_example();
     }
+    let root = std::env::current_dir()?;
     if cli.dump_map {
-        let root = std::env::current_dir()?;
-        // the same resolution order as the injected map: flag, env, default
-        let bytes = cli
-            .map_bytes
-            .or_else(|| {
-                std::env::var("RAGENT_MAP_BYTES")
-                    .ok()
-                    .and_then(|v| v.parse::<usize>().ok())
-            })
-            .unwrap_or(repomap::DEFAULT_BUDGET);
-        print!("{}", repomap::build(&root, bytes));
+        print!(
+            "{}",
+            deeptui_repomap::build(&root, settings::map_bytes(cli.map_bytes))
+        );
         return Ok(());
     }
     // Sweep leftovers of an earlier swap (Windows keeps the old image aside).
-    update::cleanup_stale();
-    let mut cfg = Config::load(
-        cli.model.as_deref(),
-        cli.base_url.as_deref(),
-        cli.api_key.as_deref(),
-        cli.budget,
-        cli.no_map,
-    )?;
-    if cli.no_update_check {
-        cfg.update_check = false;
-    }
-    if let Some(b) = cli.map_bytes {
-        cfg.map_bytes = b.clamp(repomap::MIN_BUDGET, repomap::MAX_BUDGET);
-    }
-
-    let mut prompt = cli.prompt.join(" ");
-    let piped = if std::io::stdin().is_terminal() {
-        None
-    } else {
-        let mut s = String::new();
-        std::io::stdin().read_to_string(&mut s).ok();
-        Some(s.trim_end().to_string()).filter(|s| !s.is_empty())
-    };
-    if let Some(p) = piped {
-        prompt = if prompt.is_empty() {
-            p
-        } else {
-            format!("{prompt}\n\n{p}")
-        };
-    }
+    deeptui_update::cleanup_stale();
+    let s = Settings::load(&cli.flags())?;
+    let prompt = cli.prompt();
+    let journal = Journal::open(&s.endpoint.model);
+    let lifetime = journal.load();
+    let (remote, events) = session(&s, &root, journal)?;
 
     if cli.print || !prompt.is_empty() {
         if prompt.is_empty() {
             bail!("empty prompt");
         }
-        headless(cfg, prompt).await
-    } else {
-        tui::run(cfg).await
+        // One cached lookup, concurrently with the run: never on the critical path.
+        if s.update_check {
+            tokio::spawn(async {
+                if let Some(tag) = deeptui_update::check(true).await {
+                    eprintln!(
+                        "\x1b[2m↑ deeptui {tag} available — deeptui --self-update (you have {})\x1b[0m",
+                        deeptui_update::current_version()
+                    );
+                }
+            });
+        }
+        let code = headless::run(remote, events, prompt, lifetime).await;
+        std::process::exit(code);
     }
+    let intro = deeptui_tui::Intro {
+        model: s.endpoint.model.clone(),
+        root,
+        context_budget: s.context_budget,
+        lifetime,
+        priced: s.tariff.is_known(),
+        update: s.update_check.then(deeptui_update::cached_update).flatten(),
+    };
+    deeptui_tui::run(remote, events, intro, deeptui_update::check(s.update_check)).await
 }
 
-/// Non-interactive run: assistant text → stdout, tool/status lines → stderr.
-async fn headless(cfg: Config, prompt: String) -> Result<()> {
-    let root = std::env::current_dir()?;
-    // One cached lookup, concurrently with the run: never on the critical path.
-    if cfg.update_check {
-        let c = cfg.clone();
-        tokio::spawn(async move {
-            if let Some(tag) = update::check(&c).await {
-                eprintln!(
-                    "\x1b[2m↑ ragent {tag} available — ragent --self-update (you have {})\x1b[0m",
-                    update::current_version()
-                );
-            }
-        });
-    }
-    let http = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .build()?;
-    let (tx, mut rx) = mpsc::channel::<AgentEvent>(512);
-    let mut msgs = vec![types::Msg::system(agent::system_prompt(
-        &root,
-        cfg.use_map,
-        cfg.map_bytes,
-    ))];
-    let cancel = CancellationToken::new();
-    {
-        let c = cancel.clone();
-        tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            c.cancel();
-        });
-    }
-
-    let cfg = Arc::new(cfg);
-    let t0 = Instant::now();
-    let fut = agent::run(
-        prompt,
-        &mut msgs,
-        cfg.clone(),
-        Arc::new(root),
-        http,
-        tx,
-        cancel.clone(),
-    );
-    tokio::pin!(fut);
-
-    let (mut intok, mut outtok, mut cached) = (0u64, 0u64, 0u64);
-    let mut out = std::io::stdout();
-    let mut code = 0;
-    let mut interrupted = false;
-    let mut handle = |ev: AgentEvent| match ev {
-        AgentEvent::Token(t) => {
-            out.write_all(t.as_bytes()).ok();
-            out.flush().ok();
-        }
-        AgentEvent::ToolStart { name, args } => {
-            eprintln!("\x1b[2m▸ {name} {args}\x1b[0m");
-        }
-        AgentEvent::ToolEnd {
-            name,
-            ms,
-            preview,
-            is_err,
-        } => {
-            let m = if is_err { "✗" } else { "✓" };
-            eprintln!("\x1b[2m  └ {m} {ms}ms {name} · {preview}\x1b[0m");
-        }
-        AgentEvent::Compacted(n) => eprintln!("\x1b[2m⛁ {n}\x1b[0m"),
-        AgentEvent::Usage {
-            input,
-            output,
-            cached: c,
-        } => {
-            intok += input;
-            outtok += output;
-            cached += c;
-        }
-        AgentEvent::Done { interrupted: i } => {
-            interrupted = i;
-            if i {
-                eprintln!("\x1b[2m— interrupted\x1b[0m");
-            }
-        }
-        AgentEvent::Err(e) => {
-            eprintln!("\x1b[31m✗ {e}\x1b[0m");
-            code = 1;
-        }
-        AgentEvent::Round(_) => {}
-    };
-    loop {
-        tokio::select! {
-            _ = &mut fut => break,
-            ev = rx.recv() => {
-                if let Some(e) = ev { handle(e) }
-            },
-        }
-    }
-    while let Ok(e) = rx.try_recv() {
-        handle(e);
-    }
-    out.write_all(b"\n").ok();
-    let task_cost = cfg.cost(intok, outtok, cached);
-    let ok = code == 0 && !interrupted;
-    stats::record(&cfg.model, intok, outtok, cached, task_cost, ok);
-    let life = stats::load();
-    eprintln!(
-        "\x1b[2m[task {}] ${:.4} · ↑{} ↓{} ⛁{} · {:.1}s · life ${:.4}/✓ ({}✓ {}✗, ${:.2} tot)\x1b[0m",
-        if ok { "ok" } else { "FAIL" },
-        task_cost,
-        util::fmt_tokens(intok),
-        util::fmt_tokens(outtok),
-        util::fmt_tokens(cached),
-        t0.elapsed().as_secs_f32(),
-        life.avg_ok().unwrap_or(0.0),
-        life.ok,
-        life.tasks - life.ok,
-        life.cost,
-    );
-    std::process::exit(code);
+/// Assemble the engine from its parts and start a session around it.
+fn session(s: &Settings, root: &Path, journal: Journal) -> Result<(Remote, mpsc::Receiver<Event>)> {
+    let provider = Provider::new(s.endpoint.clone())?;
+    let toolbox = Toolbox::new(Workspace::new(root, s.bash_timeout_ms));
+    let engine = Engine::new(provider, toolbox, s.tariff, s.context_budget);
+    let history = vec![Msg::system(system_prompt(root, s.map))];
+    Ok(Session::new(engine, history).tap(journal).spawn())
 }

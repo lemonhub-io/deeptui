@@ -337,6 +337,114 @@ dependencies = [
 ]
 
 [[package]]
+name = "deeptui"
+version = "0.1.0-beta"
+dependencies = [
+ "anyhow",
+ "clap",
+ "deeptui-core",
+ "deeptui-engine",
+ "deeptui-provider",
+ "deeptui-repomap",
+ "deeptui-testkit",
+ "deeptui-tools",
+ "deeptui-tui",
+ "deeptui-update",
+ "dirs",
+ "serde",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "deeptui-core"
+version = "0.1.0-beta"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "deeptui-engine"
+version = "0.1.0-beta"
+dependencies = [
+ "deeptui-core",
+ "deeptui-provider",
+ "deeptui-repomap",
+ "deeptui-testkit",
+ "deeptui-tools",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "deeptui-provider"
+version = "0.1.0-beta"
+dependencies = [
+ "anyhow",
+ "deeptui-core",
+ "deeptui-testkit",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "deeptui-repomap"
+version = "0.1.0-beta"
+dependencies = [
+ "deeptui-testkit",
+ "ignore",
+ "regex",
+]
+
+[[package]]
+name = "deeptui-testkit"
+version = "0.1.0-beta"
+
+[[package]]
+name = "deeptui-tools"
+version = "0.1.0-beta"
+dependencies = [
+ "deeptui-core",
+ "deeptui-repomap",
+ "deeptui-testkit",
+ "ignore",
+ "regex",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "deeptui-tui"
+version = "0.1.0-beta"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "deeptui-core",
+ "deeptui-engine",
+ "ratatui",
+ "regex",
+ "tokio",
+ "tokio-stream",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "deeptui-update"
+version = "0.1.0-beta"
+dependencies = [
+ "anyhow",
+ "deeptui-testkit",
+ "dirs",
+ "flate2",
+ "reqwest",
+ "serde_json",
+]
+
+[[package]]
 name = "dirs"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -437,23 +545,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e"
 
 [[package]]
-name = "futures-io"
-version = "0.3.34"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53c0fa8157de1303bfffdaa1cc2a673bfffb60102f76b0ef4441659124373fed"
-
-[[package]]
-name = "futures-macro"
-version = "0.3.34"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.7",
-]
-
-[[package]]
 name = "futures-sink"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -472,11 +563,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
  "futures-core",
- "futures-io",
- "futures-macro",
- "futures-sink",
  "futures-task",
- "memchr",
  "pin-project-lite",
  "slab",
 ]
@@ -1072,28 +1159,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
-name = "ragent"
-version = "0.6.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm",
- "dirs",
- "flate2",
- "ignore",
- "ratatui",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "toml",
- "unicode-width 0.2.0",
-]
-
-[[package]]
 name = "rand"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1198,7 +1263,6 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "futures-core",
- "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -1218,14 +1282,12 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
- "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams",
  "web-sys",
  "webpki-roots",
 ]
@@ -1914,19 +1976,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23f0c9c52aa7cd7d77769a4cfe2a9adb1b331f489a41d912ce14513d5ab995c6"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "wasm-streams"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
-dependencies = [
- "futures-util",
- "js-sys",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]

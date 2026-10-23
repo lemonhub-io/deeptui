@@ -37,6 +37,6 @@ jobs:
       - run: cargo build --release --locked
       - name: smoke test (help + version)
         run: |
-          ${{ matrix.os == 'windows-latest' && './target/release/ragent.exe --version' || './target/release/ragent --version' }}
-          ${{ matrix.os == 'windows-latest' && './target/release/ragent.exe --help' || './target/release/ragent --help' }} > /dev/null
+          ${{ matrix.os == 'windows-latest' && './target/release/deeptui.exe --version' || './target/release/deeptui --version' }}
+          ${{ matrix.os == 'windows-latest' && './target/release/deeptui.exe --help' || './target/release/deeptui --help' }} > /dev/null
         shell: bash

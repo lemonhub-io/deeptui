@@ -1,0 +1,19 @@
+[package]
+name = "deeptui-provider"
+description = "OpenAI-compatible chat completions over SSE, decoded into deeptui-core deltas."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+deeptui-core.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+deeptui-testkit.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }

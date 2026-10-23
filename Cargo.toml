@@ -1,15 +1,38 @@
-[package]
-name = "ragent"
-version = "0.6.0"
-edition = "2021"
-description = "Lean Rust coding agent: extreme cost & speed optimization"
-license = "Apache-2.0"
-keywords = ["ai", "agent", "llm", "cli", "tui"]
-categories = ["command-line-utilities"]
+# One binary, eight crates. The dependency graph *is* the architecture:
+#
+#   deeptui-core      pure domain — transcript, turn machine, events, prices (no IO)
+#   deeptui-provider  OpenAI-compatible SSE wire           ─┐
+#   deeptui-repomap   repo skeleton + the project walk      │ adapters: each owns
+#   deeptui-tools     effect-typed tool capabilities        │ one kind of IO
+#   deeptui-update    self-update from GitHub releases     ─┘
+#   deeptui-engine    interprets the turn machine; the session actor
+#   deeptui-tui       ratatui frontend — a projection of the event stream
+#   deeptui (here)    composition root: settings, wiring, headless frontend
+#
+# Arrows only point down that list, and the compiler enforces it: core cannot
+# reach the network even by accident.
+[workspace]
+members = ["crates/*"]
+default-members = [".", "crates/*"]
+resolver = "2"
 
-[dependencies]
-tokio = { version = "1", features = ["macros", "process", "time", "sync", "signal"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+[workspace.package]
+version = "0.1.0-beta"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+deeptui-core = { path = "crates/core" }
+deeptui-provider = { path = "crates/provider" }
+deeptui-repomap = { path = "crates/repomap" }
+deeptui-tools = { path = "crates/tools" }
+deeptui-engine = { path = "crates/engine" }
+deeptui-tui = { path = "crates/tui" }
+deeptui-update = { path = "crates/update" }
+deeptui-testkit = { path = "crates/testkit" }
+
+tokio = { version = "1", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -18,18 +41,41 @@ clap = { version = "4", features = ["derive"] }
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.28", features = ["event-stream", "bracketed-paste"] }
 tokio-stream = "0.1"
+tokio-util = "0.7"
 unicode-width = "0.2"
 ignore = "0.4"
 regex = "1"
 dirs = "5"
-tokio-util = { version = "0.7" }
 # self-update only: gzip + raw inflate for the release assets. Pure Rust
 # backend, no C toolchain, and nothing is decompressed unless we update.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
+[package]
+name = "deeptui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lean Rust coding agent: extreme cost & speed optimization"
+keywords = ["ai", "agent", "llm", "cli", "tui"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+deeptui-core.workspace = true
+deeptui-provider.workspace = true
+deeptui-repomap.workspace = true
+deeptui-tools.workspace = true
+deeptui-engine.workspace = true
+deeptui-tui.workspace = true
+deeptui-update.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "signal", "sync"] }
+serde.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+dirs.workspace = true
+
 [dev-dependencies]
-# `cargo test` needs a runtime + loopback HTTP for the stub server.
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time", "sync", "process"] }
+deeptui-testkit.workspace = true
 
 [profile.dev]
 debug = "line-tables-only"

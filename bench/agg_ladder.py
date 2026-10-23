@@ -1,7 +1,7 @@
 import json
 
 LOGS = {a: [json.loads(l) for l in open(f"/tmp/proxylog_{a}.jsonl")]
-        for a in ["ragent", "codex", "grok"]}
+        for a in ["deeptui", "codex", "grok"]}
 
 def cost(i, o, c):
     return ((i - c) * 0.15 + c * 0.003 + o * 0.60) / 1e6
@@ -40,7 +40,7 @@ for t in ["L3", "L4", "L5", "L6"]:
 
 print("=== ladder totals (L3-L6) ===")
 print(f"{'agent':<7} {'ok':<5} {'sec':>7} {'reqs':>5} {'in':>9} {'out':>7} {'cost$':>9} {'$/✓':>8}")
-for a in ["ragent", "codex", "grok"]:
+for a in ["deeptui", "codex", "grok"]:
     rs = [r for r in rows if r["agent"] == a]
     nok = sum(1 for r in rs if r["ok"] == "OK")
     s = sum(r["sec"] for r in rs); n = sum(r["nreq"] for r in rs)

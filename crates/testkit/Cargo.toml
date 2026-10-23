@@ -1,0 +1,9 @@
+[package]
+name = "deeptui-testkit"
+description = "Test fixtures shared by the deeptui crates: temp project roots and a loopback HTTP stub."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]

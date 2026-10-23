@@ -12,4 +12,4 @@ Reproducible harness for the evaluation in [../REPORT.md](../REPORT.md).
 
 All agent invocations require a `DEEPSEEK_API_KEY` env var (the proxy injects
 it, so agents can also run with dummy keys). L3 binds a fixture HTTP server on
-per-agent ports (ragent 8931, codex 8932, grok 8933, pi 8934).
+per-agent ports (deeptui 8931, codex 8932, grok 8933, pi 8934).

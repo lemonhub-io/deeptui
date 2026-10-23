@@ -1,0 +1,18 @@
+[package]
+name = "deeptui-tui"
+description = "deeptui's terminal UI: a projection of the session's event stream."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+deeptui-core.workspace = true
+deeptui-engine.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+unicode-width.workspace = true
+regex.workspace = true
+anyhow.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
+tokio-stream.workspace = true

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Benchmark: ragent vs codex vs grok on deepseek-flash, via logging proxies.
+# Benchmark: deeptui vs codex vs grok on deepseek-flash, via logging proxies.
 KEY=${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY}
 BENCH_DIR=$(cd "$(dirname "$0")" && pwd)
-RAGENT=${RAGENT:-$BENCH_DIR/../target/release/ragent}
+DEEPTUI=${DEEPTUI:-$BENCH_DIR/../target/release/deeptui}
 
 declare -A PROMPTS=(
   [T1]="fix the bug in calc.py and verify by running it"
@@ -23,15 +23,15 @@ run() {
   local start end
   start=$(date +%s.%N)
   case $agent in
-    ragent)
-      (cd "$dir" && RAGENT_BASE_URL=http://127.0.0.1:9101/v1 timeout 180 "$RAGENT" "${PROMPTS[$task]}") \
+    deeptui)
+      (cd "$dir" && DEEPTUI_BASE_URL=http://127.0.0.1:9101/v1 timeout 180 "$DEEPTUI" "${PROMPTS[$task]}") \
         > /tmp/benchout_${agent}_${task}.log 2>&1 ;;
     codex)
-      (cd "$dir" && RAGENT_API_KEY=$KEY timeout 180 codex exec -m deepseek-flash \
+      (cd "$dir" && DEEPTUI_API_KEY=$KEY timeout 180 codex exec -m deepseek-flash \
         -c model_provider='"deepseek"' \
         -c 'model_providers.deepseek.name="DeepSeek"' \
         -c 'model_providers.deepseek.base_url="http://127.0.0.1:9102/v1"' \
-        -c 'model_providers.deepseek.env_key="RAGENT_API_KEY"' \
+        -c 'model_providers.deepseek.env_key="DEEPTUI_API_KEY"' \
         --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox \
         "${PROMPTS[$task]}") > /tmp/benchout_${agent}_${task}.log 2>&1 ;;
     grok)

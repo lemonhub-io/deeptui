@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# ragent installer — one command to a working `ragent`.
+# DeepTUI installer — one command to a working `deeptui`.
 #
-#   curl -fsSL https://raw.githubusercontent.com/lemonhub-io/ragent/master/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/lemonhub-io/deeptui/master/install.sh | bash
 #
 # Downloads the release binary for this platform, verifies its SHA-256 against
 # the release's SHA256SUMS.txt, smoke-tests it, then installs it atomically.
@@ -12,15 +12,15 @@
 #   install.sh --help            all options
 set -euo pipefail
 
-REPO="lemonhub-io/ragent"
-BIN="ragent"
-INSTALLER_VERSION="1.0.0"
+REPO="lemonhub-io/deeptui"
+BIN="deeptui"
+INSTALLER_VERSION="0.1.0-beta"
 RELEASE_BASE="https://github.com/$REPO/releases"
 
-# Flags / env defaults. RAGENT_VERSION pins the release tag; RAGENT_INSTALL_DIR
+# Flags / env defaults. DEEPTUI_VERSION pins the release tag; DEEPTUI_INSTALL_DIR
 # overrides the target directory (same as --bin-dir).
-tag="${RAGENT_VERSION:-latest}"
-bin_dir="${RAGENT_INSTALL_DIR:-}"
+tag="${DEEPTUI_VERSION:-latest}"
+bin_dir="${DEEPTUI_INSTALL_DIR:-}"
 prefix=""
 target=""
 target_explicit=0
@@ -50,12 +50,12 @@ die() {
 
 usage() {
   cat <<EOF
-${c_bold}ragent installer${c_off} $INSTALLER_VERSION
+${c_bold}DeepTUI installer${c_off} $INSTALLER_VERSION
 
 Usage: install.sh [options]
 
 Options:
-  -t, --tag TAG        Release tag to install (default: latest, e.g. --tag v0.3.0)
+  -t, --tag TAG        Release tag to install (default: latest, e.g. --tag v0.1.0-beta)
   -b, --bin-dir DIR    Install the binary into DIR
       --prefix DIR     Install into DIR/bin (default: ~/.local, or /usr/local as root)
       --target TRIPLE  Force a release target triple (e.g. x86_64-unknown-linux-gnu)
@@ -69,8 +69,8 @@ Options:
   -h, --help           This help
 
 Environment:
-  RAGENT_VERSION       Same as --tag
-  RAGENT_INSTALL_DIR   Same as --bin-dir
+  DEEPTUI_VERSION       Same as --tag
+  DEEPTUI_INSTALL_DIR   Same as --bin-dir
   NO_COLOR             Disable coloured output
 
 Prebuilt targets: linux x86_64 (static musl) / aarch64, macOS x86_64 / arm64,
@@ -180,7 +180,7 @@ detect_platform() {
 # Release binaries target x86-64-v3 (AVX2/BMI2/FMA). On an older CPU they die
 # with SIGILL, so build locally for x86-64-v2 instead.
 has_avx2() {
-  cpuinfo="${RAGENT_INSTALL_CPUINFO:-/proc/cpuinfo}" # override: odd containers, tests
+  cpuinfo="${DEEPTUI_INSTALL_CPUINFO:-/proc/cpuinfo}" # override: odd containers, tests
   [ -r "$cpuinfo" ] || return 0
   grep -qw avx2 "$cpuinfo"
 }
@@ -285,7 +285,7 @@ install_bin() { # candidate binary path
   if [ -x "$dst" ]; then old="$("$dst" --version 2>/dev/null)" || old=""; fi
 
   # Copy next to the target, then rename: an interrupted install can never
-  # leave a half-written ragent behind.
+  # leave a half-written deeptui behind.
   tmpdst="$bin_dir/.$BIN.new.$$"
   if ! install -m 755 "$cand" "$tmpdst" 2>/dev/null; then
     cp "$cand" "$tmpdst" && chmod 755 "$tmpdst"
@@ -430,8 +430,8 @@ do_uninstall() {
   rm -f "$dst"
   ok "removed $dst"
   if [ -n "${HOME:-}" ]; then
-    step "left in place: ${XDG_CONFIG_HOME:-$HOME/.config}/ragent (config)"
-    step "                ${XDG_DATA_HOME:-$HOME/.local/share}/ragent (usage stats)"
+    step "left in place: ${XDG_CONFIG_HOME:-$HOME/.config}/deeptui (config)"
+    step "                ${XDG_DATA_HOME:-$HOME/.local/share}/deeptui (usage stats)"
   fi
 }
 
@@ -443,7 +443,7 @@ main() {
         exit 0
         ;;
       -V | --version)
-        printf 'ragent installer %s\n' "$INSTALLER_VERSION"
+        printf 'DeepTUI installer %s\n' "$INSTALLER_VERSION"
         exit 0
         ;;
       -t | --tag | --tag=*)
@@ -516,7 +516,7 @@ main() {
   detect_platform
 
   if [ "$os_name" = windows ]; then
-    die "Windows: grab ragent-<tag>-x86_64-pc-windows-msvc.zip from $RELEASE_BASE/latest and put ragent.exe on PATH"
+    die "Windows: grab deeptui-<tag>-x86_64-pc-windows-msvc.zip from $RELEASE_BASE/latest and put deeptui.exe on PATH"
   fi
   if [ -z "$target" ] && [ "$from_source" -eq 0 ]; then
     if [ -z "$source_dir" ] && [ -z "$script_dir" ]; then
@@ -586,7 +586,7 @@ main() {
   path_hint
   printf '\n'
   printf '%s%s is ready.%s Run it with: %s%s%s\n' "$c_bold" "$BIN" "$c_off" "$c_bold" "$bin_dir/$BIN" "$c_off"
-  printf 'First run: set an API key (%sRAGENT_API_KEY=sk-…%s) or run %s%s --init%s.\n' \
+  printf 'First run: set an API key (%sDEEPTUI_API_KEY=sk-…%s) or run %s%s --init%s.\n' \
     "$c_dim" "$c_off" "$c_dim" "$BIN" "$c_off"
   printf 'Later: %s%s --self-update%s swaps in the newest release in place.\n' \
     "$c_dim" "$BIN" "$c_off"
@@ -610,5 +610,5 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
 
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/ragent-install.XXXXXX")"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/deeptui-install.XXXXXX")"
 main "$@"

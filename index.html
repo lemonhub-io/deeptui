@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>ragent — Lean AI coding agent in Rust</title>
-<meta name="description" content="ragent is a lean AI coding agent in Rust. 5.6 MB binary, ~5 ms startup, ~4 MB RSS, $0.0011 per successful task. Every design decision optimizes API cost and speed.">
+<title>DeepTUI — Lean AI coding agent in Rust</title>
+<meta name="description" content="DeepTUI is a lean AI coding agent in Rust. 5.6 MB binary, ~5 ms startup, ~4 MB RSS, $0.0011 per successful task. Every design decision optimizes API cost and speed.">
 <style>
 /* ---------------------------------------------------------------
-   ragent — design tokens
+   DeepTUI — design tokens
    --------------------------------------------------------------- */
 :root{
   --bg:#ffffff;
@@ -201,14 +201,14 @@ code,kbd,pre{font-family:var(--mono);font-feature-settings:"liga" 0}
 .terminal__bar i:nth-child(3){background:#28c840}
 .terminal__bar span{margin-left:8px;font-family:var(--mono);font-size:11.5px;color:#7a7a85}
 .terminal__body{padding:22px 24px 24px;font-family:var(--mono);font-size:13.2px;line-height:1.62;color:#d6d6dd;white-space:pre;overflow-x:auto}
-.t-dim{color:#6d6d78}.t-blue{color:#5ac8fa}.t-green{color:#30d158}.t-amber{color:#ffd60a}.t-violet{color:#bf5af2}.t-red{color:#ff6b6b}
+.t-dim{color:#6d6d78}.t-blue{color:#60a5fa}.t-green{color:#30d158}.t-amber{color:#ffd60a}.t-violet{color:#bf5af2}.t-red{color:#ff6b6b}
 .terminal__status{
   display:flex;flex-wrap:wrap;gap:18px;padding:10px 24px;
-  border-top:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.035);
+  border-top:1px solid rgba(255,255,255,.07);background:#17253d;
   font-family:var(--mono);font-size:11.5px;color:#8b8b96;
 }
-.terminal__status b{color:#c9c9d2;font-weight:500}
-.caret{display:inline-block;width:8px;height:15px;background:#5ac8fa;vertical-align:-2px;animation:blink 1.15s steps(1) infinite}
+.terminal__status b{color:#93c5fd;font-weight:500}
+.caret{display:inline-block;width:8px;height:15px;background:#60a5fa;vertical-align:-2px;animation:blink 1.15s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
 
 /* ---------------------------------------------------------------
@@ -392,7 +392,7 @@ kbd{
       <span class="brand__mark" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none"><path d="M5 7l6 6-6 6" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 19h6" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/></svg>
       </span>
-      ragent
+      DeepTUI
     </a>
     <div class="nav__links">
       <a href="#cost">Cost</a>
@@ -401,7 +401,7 @@ kbd{
       <a href="#tools">Tools</a>
       <a href="#tui">Terminal</a>
       <a href="#start">Config</a>
-      <a class="pill" href="#start">Get ragent <span aria-hidden="true">↗</span></a>
+      <a class="pill" href="#start">Get DeepTUI <span aria-hidden="true">↗</span></a>
     </div>
   </div>
 </nav>
@@ -410,7 +410,7 @@ kbd{
 <header class="hero" id="top">
   <div class="hero__glow" aria-hidden="true"></div>
   <div class="wrap">
-    <h1>ragent</h1>
+    <h1>DeepTUI</h1>
     <p class="hero__tag">Lean. Fast. Inexpensive.</p>
     <p class="hero__lede">
       A lean AI coding agent written in Rust. Every design decision optimizes exactly
@@ -425,15 +425,15 @@ kbd{
       <span class="chip"><span class="dot"></span>5.6 MB binary</span>
       <span class="chip"><span class="dot"></span>~5 ms startup</span>
       <span class="chip"><span class="dot"></span>~4 MB RSS</span>
-      <span class="chip"><span class="dot"></span>Apache-2.0 · v0.2.0</span>
+      <span class="chip"><span class="dot"></span>Apache-2.0 · v0.1.0-beta</span>
     </div>
 
     <!-- Terminal -->
     <div class="terminal" data-reveal>
-      <div class="terminal__bar"><i></i><i></i><i></i><span>ragent — zsh — 96×28</span></div>
-      <div class="terminal__body"><span class="t-dim">┌─ ragent v0.2.0 ─────────────────────────────────────┐</span>
+      <div class="terminal__bar"><i></i><i></i><i></i><span>DeepTUI — zsh — 96×28</span></div>
+      <div class="terminal__body"><span class="t-dim">┌─ DeepTUI v0.1.0-beta ───────────────────────────────┐</span>
 <span class="t-dim">│</span> <span class="t-blue">model</span>     deepseek-flash                            <span class="t-dim">│</span>
-<span class="t-dim">│</span> <span class="t-blue">root</span>      ~/lemon/agent                             <span class="t-dim">│</span>
+<span class="t-dim">│</span> <span class="t-blue">root</span>      ~/lemon/deeptui                           <span class="t-dim">│</span>
 <span class="t-dim">│</span> <span class="t-blue">context</span>   60k budget · auto-compaction above        <span class="t-dim">│</span>
 <span class="t-dim">│</span> <span class="t-blue">lifetime</span>  8/8 ✓ · $0.0011 avg / ✓                   <span class="t-dim">│</span>
 <span class="t-dim">└─────────────────────────────────────────────────────┘</span>
@@ -474,7 +474,7 @@ kbd{
     <div class="section__head" data-reveal>
       <div class="eyebrow">Cost</div>
       <h2 class="h2">Every word is billed.<br>So there are very few of them.</h2>
-      <p class="lede">A coding agent re-sends its entire scaffolding on every round. ragent keeps
+      <p class="lede">A coding agent re-sends its entire scaffolding on every round. DeepTUI keeps
       that scaffolding at roughly 1.3k input tokens — and puts a price on every token it spends.</p>
     </div>
 
@@ -500,7 +500,7 @@ kbd{
       <div class="card" data-reveal>
         <div class="ico" aria-hidden="true">&#9635;</div>
         <h3>Repo map, injected once</h3>
-        <p>A file tree plus symbol outlines — ranked so entry points get the detail, with a byte budget that never ships a file body. See it with <code class="mono">ragent --dump-map</code>.</p>
+        <p>A file tree plus symbol outlines — ranked so entry points get the detail, with a byte budget that never ships a file body. See it with <code class="mono">deeptui --dump-map</code>.</p>
         <span class="card__ref">repomap.rs::build</span>
       </div>
       <div class="card" data-reveal>
@@ -522,7 +522,7 @@ kbd{
         <div class="eyebrow">Accountability</div>
         <h3 class="h3">Cost per successful task, not per token.</h3>
         <p class="lede" style="margin-top:18px;font-size:17px">
-          Every run is appended to <code class="mono">~/.local/share/ragent/stats.tsv</code>.
+          Every run is appended to <code class="mono">~/.local/share/deeptui/stats.tsv</code>.
           The TUI shows <code class="mono">task $x</code> and session <code class="mono">$/✓</code> live;
           headless mode prints the task cost plus a lifetime average. In the benchmark it was the
           only agent whose self-reported cost matched the proxy-measured cost exactly.
@@ -593,7 +593,7 @@ tasks 8/8 ✓ · avg <span style="color:#30d158">$0.0011</span>/✓ · total $0.
     <div class="section__head" data-reveal>
       <div class="eyebrow">Measured, not claimed</div>
       <h2 class="h2">Four agents. One model.<br>One task suite.</h2>
-      <p class="lede">ragent, Pi, Codex CLI and Grok CLI all ran <code class="mono">deepseek-flash</code>
+      <p class="lede">DeepTUI, Pi, Codex CLI and Grok CLI all ran <code class="mono">deepseek-flash</code>
       through a per-agent logging proxy. Usage comes from the provider's own billing field — not from
       any agent's self-report.</p>
     </div>
@@ -609,14 +609,14 @@ tasks 8/8 ✓ · avg <span style="color:#30d158">$0.0011</span>/✓ · total $0.
           </tr>
         </thead>
         <tbody>
-          <tr class="win"><td>ragent</td><td>8/8</td><td>76.6 s</td><td>39</td><td>104,862</td><td>10,304</td><td>$0.0090</td><td>$0.00112</td></tr>
+          <tr class="win"><td>DeepTUI</td><td>8/8</td><td>76.6 s</td><td>39</td><td>104,862</td><td>10,304</td><td>$0.0090</td><td>$0.00112</td></tr>
           <tr><td>pi</td><td>8/8</td><td>150.7 s</td><td>39</td><td>117,632</td><td>10,621</td><td>$0.0096</td><td>$0.00120</td></tr>
           <tr><td>grok</td><td>8/8</td><td>201.8 s</td><td>73</td><td>1,254,634</td><td>21,554</td><td>$0.0295</td><td>$0.00369</td></tr>
           <tr><td>codex</td><td><span class="bad">6/8</span></td><td>1,382.4 s</td><td>379</td><td>53,323,006</td><td>216,831</td><td>$0.4199</td><td>$0.07000</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="tbl-note" data-reveal>ragent and Pi tie on token economy; ragent is ~2× faster at identical
+    <p class="tbl-note" data-reveal>DeepTUI and Pi tie on token economy; DeepTUI is ~2× faster at identical
     request counts. Codex failed two medium tasks by timing out in a compaction loop — 173 iterations,
     22.4M input tokens, $0.176 for one endpoint.</p>
 
@@ -626,12 +626,12 @@ tasks 8/8 ✓ · avg <span style="color:#30d158">$0.0011</span>/✓ · total $0.
         <p class="lede" style="font-size:16px">
           Measured request body → billed input on the first request of a fresh session.
           Difficulty scaled request <em>count</em> for lean agents; for heavy ones it scaled request
-          <em>size</em>. ragent's per-request input never left the low thousands.
+          <em>size</em>. DeepTUI's per-request input never left the low thousands.
         </p>
       </div>
       <div class="bars" data-reveal>
         <div class="bar bar--a">
-          <div class="bar__top"><b>ragent</b><span>~4 KB → ~1.3k tokens · 70–90% cached</span></div>
+          <div class="bar__top"><b>DeepTUI</b><span>~4 KB → ~1.3k tokens · 70–90% cached</span></div>
           <div class="bar__track"><i data-w="4%"></i></div>
         </div>
         <div class="bar bar--b">
@@ -750,7 +750,7 @@ deepseek-flash │ 60k ctx │ task <span style="color:#7ee787">$0.0002</span> �
       <h2 class="h2">One binary.<br>Any OpenAI-compatible model.</h2>
       <p class="lede">Point it at OpenAI, DeepSeek, OpenRouter, Ollama, vLLM, LM Studio — anything that
       speaks the chat-completions wire format. Configuration resolves CLI flag → environment →
-      <code class="mono">~/.config/ragent/config.toml</code> → defaults.</p>
+      <code class="mono">~/.config/deeptui/config.toml</code> → defaults.</p>
     </div>
 
     <div class="providers" data-reveal>
@@ -763,30 +763,30 @@ deepseek-flash │ 60k ctx │ task <span style="color:#7ee787">$0.0002</span> �
         <div class="code">
           <button class="copy" data-copy>Copy</button>
           <pre><span class="c"># install — one line, sha256-verified (Linux &amp; macOS)</span>
-curl -fsSL https://raw.githubusercontent.com/lemonhub-io/ragent/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lemonhub-io/deeptui/master/install.sh | bash -s -- --tag v0.1.0-beta
 
 <span class="c"># …or build from source</span>
 cargo build --release
 
 <span class="c"># configure</span>
-<span class="k">export</span> RAGENT_API_KEY=sk-…   <span class="c"># or OPENAI_API_KEY</span>
-ragent --init                <span class="c"># write a commented example</span>
+<span class="k">export</span> DEEPTUI_API_KEY=sk-…   <span class="c"># or OPENAI_API_KEY</span>
+deeptui --init                <span class="c"># write a commented example</span>
 
 <span class="c"># run</span>
-ragent                                 <span class="c"># TUI</span>
-ragent <span class="s">"fix the bug in src/api.rs"</span>   <span class="c"># headless</span>
-git diff | ragent <span class="s">"review this"</span>       <span class="c"># piped stdin</span>
-ragent --dump-map                       <span class="c"># print the injected repo map</span>
+deeptui                                 <span class="c"># TUI</span>
+deeptui <span class="s">"fix the bug in src/api.rs"</span>   <span class="c"># headless</span>
+git diff | deeptui <span class="s">"review this"</span>       <span class="c"># piped stdin</span>
+deeptui --dump-map                       <span class="c"># print the injected repo map</span>
 
 <span class="c"># later</span>
-ragent --self-update                    <span class="c"># verify + swap in the newest release</span></pre>
+deeptui --self-update                    <span class="c"># verify + swap in the newest release</span></pre>
         </div>
       </div>
 
       <div data-reveal>
         <div class="code">
           <button class="copy" data-copy>Copy</button>
-          <pre><span class="c"># ~/.config/ragent/config.toml</span>
+          <pre><span class="c"># ~/.config/deeptui/config.toml</span>
 api_key = <span class="s">"…"</span>
 base_url = <span class="s">"https://api.deepseek.com/v1"</span>
 model = <span class="s">"deepseek-flash"</span>
@@ -815,7 +815,7 @@ price_cached = <span class="p">0.003</span></pre>
           <span class="brand__mark" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none"><path d="M5 7l6 6-6 6" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 19h6" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/></svg>
           </span>
-          ragent
+          DeepTUI
         </div>
         <p style="line-height:1.55">A lean AI coding agent in Rust. Extreme cost &amp; speed optimization —
         and a benchmark you can reproduce.</p>
@@ -851,8 +851,8 @@ price_cached = <span class="p">0.003</span></pre>
       </div>
     </div>
     <div class="footer__legal">
-      <span>Copyright © 2025 ragent contributors. Apache License 2.0.</span>
-      <span>v0.2.0 · 5.6 MB · ~5 ms cold start</span>
+      <span>Copyright © 2025 DeepTUI contributors. Apache License 2.0.</span>
+      <span>v0.1.0-beta · 5.6 MB · ~5 ms cold start</span>
     </div>
   </div>
 </footer>

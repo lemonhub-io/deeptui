@@ -1,7 +1,7 @@
 {
-  // Cloudflare Pages project for the ragent landing page (index.html).
+  // Cloudflare Pages project for the deeptui landing page (index.html).
   // Deploy with:  ./deploy.sh     (or)  wrangler pages deploy dist
-  "name": "ragent",
+  "name": "deeptui",
   "compatibility_date": "2026-10-11",
   "pages_build_output_dir": "./dist"
 }
