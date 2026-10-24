@@ -109,6 +109,7 @@ stripped; dev = `line-tables-only` debug info; single-thread tokio runtime
 | `edit_file` = exact search/replace, never whole-file rewrites | `tools/src/fs.rs::edit_file` |
 | Hard caps on all tool output (lines/bytes/hits; truncation tells model how to page) | `tools/src/{fs,search,shell}.rs` consts |
 | Repo map injected once — file tree + symbol outlines, not file contents | `deeptui-repomap` |
+| Skills as an index: one prompt line per `SKILL.md`, body fetched on demand | `crates/tools/src/skill.rs` |
 | Map budget (bytes) spent by file rank: entry points first, `...` for what is cut; every code file keeps a symbol floor | `repomap/src/lib.rs::build` |
 | Auto-compaction: stale tool outputs → `[elided · gist]` (`exit 1`, `error: …`, `120 lines`), then middle-history drop with tool-call orphan repair | `core/src/history.rs::compact` |
 | The dropped middle leaves a **work log** — one line per step (`bash \`cargo test\` → exit 101 (×3)`), built from the messages, zero API cost — so a compacted model doesn't redo or re-verify work it can no longer see (the loop that sank Codex in REPORT.md) | `core/src/history.rs::work_log` |
@@ -126,7 +127,7 @@ stripped; dev = `line-tables-only` debug info; single-thread tokio runtime
 | Lever | Where |
 |---|---|
 | SSE streaming to the UI per chunk | `provider/src/lib.rs::Completion` |
-| Tool calls run in waves derived from their declared effect: consecutive reads (`read_file`/`grep`/`glob`/`ls`/`repomap`) run concurrently, every write is a barrier | `core/src/schedule.rs`, `engine` |
+| Tool calls run in waves derived from their declared effect: consecutive reads (`read_file`/`grep`/`glob`/`ls`/`repomap`/`skill`) run concurrently, every write is a barrier | `core/src/schedule.rs`, `engine` |
 | Blocking file ops run in `spawn_blocking`; `ignore` crate walks respect `.gitignore` and skip `target`/`node_modules`/etc. | `deeptui-tools`, `deeptui-repomap` |
 | No tokenizer dependency — a 1-division char heuristic estimates tokens in O(n) with zero load time | `core/src/history.rs::est_tokens` |
 | Incremental scrollback wrap cache; only new lines rewrap, only visible lines materialize per frame | `tui/src/feed.rs` |
@@ -152,6 +153,7 @@ price_output = 0.60
 price_cached = 0.003
 use_map = true               # inject the repo map into the system prompt
 map_bytes = 5000             # repo-map budget in bytes (env DEEPTUI_MAP_BYTES)
+use_skills = true            # index SKILL.md files for the skill tool (--no-skills)
 max_rounds = 60              # model rounds per task; the last reports status (0 = no cap)
 max_task_cost = 0.50         # $ per task before it is stopped (0 = no cap, the default)
 save_session = true          # keep conversations per project for /resume and --continue
@@ -215,6 +217,7 @@ nothing new costs one empty reply; offline, the last copy is used.
 
 See the map without spending a token: `deeptui --dump-map [--map-bytes N]`
 prints exactly what gets injected (`--no-map` / `use_map = false` disables it).
+`deeptui --dump-skills` does the same for the skill index.
 
 ## TUI
 
@@ -247,6 +250,7 @@ typed. None of them calls the model, except `/retry` re-running a prompt.
 | `/retry` | forget the last turn and run its prompt again |
 | `/context` | context size against the budget: system / tool output / conversation |
 | `/cost` | session spend, tasks, tokens and cache hit rate |
+| `/skills` | the `SKILL.md` skills the agent can load, and where they live |
 | `/copy` | copy the last answer to the clipboard (OSC 52, works over ssh) |
 | `/exit` (`/quit`) | quit |
 
@@ -272,7 +276,8 @@ respects the system's reduced-motion setting. Preview it locally with
 `read_file` (offset/limit paging) · `edit_file` (atomic multi-edit search/replace) ·
 `write_file` · `bash` (timeout, head+tail truncation) · `grep` (regex, gitignore-aware,
 glob filter) · `glob` · `ls` · `repomap` (`path` scopes to a subtree, `budget` sizes the
-output). File tools are confined to the project root; `bash` is your shell.
+output) · `skill` (loads a `SKILL.md` body on demand; no name lists them). File
+tools are confined to the project root; `bash` is your shell.
 
 How they hold up when the model is sloppy:
 
@@ -290,6 +295,39 @@ How they hold up when the model is sloppy:
 - **Arguments** that are near-JSON (raw newlines in strings, a markdown fence,
   double encoding, trailing prose) are repaired; anything else is an error that
   says why, instead of a misleading `missing <field>`.
+
+## Skills
+
+A skill is a directory holding a `SKILL.md` — YAML frontmatter (`name`,
+`description`) plus a markdown body — or a flat `<name>.md`. They are indexed at
+startup and the system prompt carries **one line per skill**; a body is read
+only when the `skill` tool loads it. That is the point: a project can carry
+dozens of skills without paying for them on every round.
+
+```
+.deeptui/skills/pdf/SKILL.md     the project's own — searched first
+skills/  .claude/skills/  .agents/skills/   also searched (first root wins a name)
+~/.deeptui/skills/               the user's; DEEPTUI_SKILLS_DIR (PATH-style) replaces it
+```
+
+```markdown
+---
+name: pdf
+description: Extract text and tables from PDF files.
+---
+
+Run `pdftotext -layout file.pdf -` first; for tables, see `references/tables.md`.
+```
+
+- The index is capped (24 lines, 1.5 KB, descriptions cut at 120 chars); the rest
+  are one name-less `skill` call away.
+- The tool strips the frontmatter, caps the body at 16k chars and names the file
+  for the rest; paths a skill mentions are relative to its own directory, so
+  `scripts/` and `references/` sit next to it.
+- Missing or malformed frontmatter is not fatal: the directory (or file stem)
+  names the skill and the first line of prose describes it.
+- `/skills` in the TUI lists what the agent can load; `--no-skills` (or
+  `use_skills = false`) turns the index off.
 
 ## Layout
 

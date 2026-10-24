@@ -1,5 +1,5 @@
 //! The system prompt: a fixed rulebook, the project root, an optional repo
-//! map, then whatever instruction files the project carries.
+//! map, the skill index, then whatever instruction files the project carries.
 
 use std::path::Path;
 
@@ -18,8 +18,10 @@ Rules:
 const INSTRUCTION_FILES: [&str; 3] = ["AGENTS.md", "CLAUDE.md", ".deeptui/rules.md"];
 const INSTRUCTION_CHARS: usize = 4000;
 
-/// `map_bytes` sizes the injected repo map; `None` leaves it out.
-pub fn system_prompt(root: &Path, map_bytes: Option<usize>) -> String {
+/// `map_bytes` sizes the injected repo map; `None` leaves it out. `skills`
+/// appends one line per discovered `SKILL.md`, whose bodies the `skill` tool
+/// fetches on demand.
+pub fn system_prompt(root: &Path, map_bytes: Option<usize>, skills: bool) -> String {
     let mut s = RULES.to_string();
     s.push_str(&format!("\nProject root: {}", root.display()));
     if let Some(bytes) = map_bytes {
@@ -27,6 +29,15 @@ pub fn system_prompt(root: &Path, map_bytes: Option<usize>) -> String {
         if !map.is_empty() {
             s.push_str("\n\n## Project map\n");
             s.push_str(&map);
+        }
+    }
+    if skills {
+        let found = deeptui_tools::skill::find_all(root);
+        let index = deeptui_tools::skill::section(&found);
+        if !index.is_empty() {
+            s.push_str("\n\n");
+            s.push_str(index.trim_end());
+            s.push('\n');
         }
     }
     for f in INSTRUCTION_FILES {
@@ -47,7 +58,7 @@ mod tests {
     #[test]
     fn prompt_names_the_root_and_the_rules() {
         let t = TmpDir::new("prompt");
-        let p = system_prompt(t.path(), None);
+        let p = system_prompt(t.path(), None, true);
         assert!(p.starts_with("You are DeepTUI"));
         assert!(p.contains(&format!("Project root: {}", t.path().display())));
         assert!(p.contains("Prefer edit_file"));
@@ -58,12 +69,12 @@ mod tests {
     fn project_map_is_optional_and_contains_paths() {
         let t = TmpDir::new("prompt-map");
         t.write("src/lib.rs", "pub fn exported() {}\n");
-        let with = system_prompt(t.path(), Some(5_000));
+        let with = system_prompt(t.path(), Some(5_000), true);
         assert!(with.contains("## Project map"), "{with}");
         assert!(with.contains("src/lib.rs"));
         assert!(with.contains("    pub fn exported() {}"), "{with}");
         // dropping the map loses the repo skeleton but keeps the rules
-        let without = system_prompt(t.path(), None);
+        let without = system_prompt(t.path(), None, true);
         assert!(!without.contains("## Project map"));
         assert!(without.contains("Prefer edit_file"));
         assert!(!without.contains("src/lib.rs"));
@@ -78,8 +89,8 @@ mod tests {
         for i in 0..8 {
             t.write(&format!("src/m{i}.rs"), &body);
         }
-        let big = system_prompt(t.path(), Some(repomap::DEFAULT_BUDGET));
-        let small = system_prompt(t.path(), Some(repomap::MIN_BUDGET));
+        let big = system_prompt(t.path(), Some(repomap::DEFAULT_BUDGET), true);
+        let small = system_prompt(t.path(), Some(repomap::MIN_BUDGET), true);
         // the default budget maps every file completely...
         assert_eq!(big.matches("    pub fn ").count(), 8 * 14);
         // ...while a tight one degrades into fewer symbols, not fewer files
@@ -89,12 +100,37 @@ mod tests {
     }
 
     #[test]
+    fn skills_are_indexed_before_the_instruction_files() {
+        let t = TmpDir::new("prompt-skills");
+        t.write(
+            ".deeptui/skills/pdf/SKILL.md",
+            "---\nname: pdf\ndescription: Extract text from PDFs.\n---\nRun pdftotext.",
+        );
+        t.write("AGENTS.md", "agents rules");
+        let p = system_prompt(t.path(), None, true);
+        let s = p.find("## Skills").expect("skills index missing");
+        assert!(p[s..].starts_with("## Skills\nLoad one with the skill tool"));
+        assert!(p.contains("- pdf: Extract text from PDFs.\n"));
+        // the body is not paid for: only the tool fetches it
+        assert!(!p.contains("Run pdftotext."));
+        assert!(s < p.find("## AGENTS.md").unwrap());
+        // ...and switching skills off drops the whole block
+        assert!(!system_prompt(t.path(), None, false).contains("## Skills"));
+    }
+
+    #[test]
+    fn a_project_without_skills_spends_nothing_on_them() {
+        let t = TmpDir::new("prompt-no-skills");
+        assert!(!system_prompt(t.path(), None, true).contains("## Skills"));
+    }
+
+    #[test]
     fn instruction_files_are_appended_in_order() {
         let t = TmpDir::new("prompt-files");
         t.write("AGENTS.md", "agents rules");
         t.write("CLAUDE.md", "claude rules");
         t.write(".deeptui/rules.md", "local rules");
-        let p = system_prompt(t.path(), None);
+        let p = system_prompt(t.path(), None, true);
         let a = p
             .find("## AGENTS.md\nagents rules")
             .expect("AGENTS.md missing");
@@ -110,18 +146,18 @@ mod tests {
     #[test]
     fn instruction_files_are_capped_and_missing_ones_skipped() {
         let t = TmpDir::new("prompt-cap");
-        let p = system_prompt(t.path(), Some(5_000));
+        let p = system_prompt(t.path(), Some(5_000), true);
         assert!(!p.contains("## AGENTS.md"));
         assert!(!p.contains("## CLAUDE.md"));
         assert!(!p.contains("## .deeptui/rules.md"));
 
         // a directory named AGENTS.md must not blow up the prompt builder
         std::fs::create_dir_all(t.join("AGENTS.md")).unwrap();
-        assert!(!system_prompt(t.path(), None).contains("## AGENTS.md"));
+        assert!(!system_prompt(t.path(), None, true).contains("## AGENTS.md"));
         std::fs::remove_dir_all(t.join("AGENTS.md")).unwrap();
 
         t.write("AGENTS.md", &"x".repeat(5000));
-        let p = system_prompt(t.path(), None);
+        let p = system_prompt(t.path(), None, true);
         let body = p.split("## AGENTS.md\n").nth(1).unwrap();
         assert_eq!(body.chars().count(), 4000);
         assert_eq!(body, "x".repeat(4000));

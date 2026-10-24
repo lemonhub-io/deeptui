@@ -16,6 +16,7 @@ use deeptui_core::text::{fmt_tokens, one_line};
 use deeptui_core::{Ask, Event, Msg, Outcome, Projection, Receipt, Role};
 use deeptui_engine::{Command, Remote};
 use std::collections::HashMap;
+use std::path::Path;
 
 pub(crate) struct App {
     pub feed: Feed,
@@ -165,7 +166,7 @@ impl App {
                     self.quit = true;
                     return false;
                 }
-                Slash::Help | Slash::Cost | Slash::Copy => {
+                Slash::Help | Slash::Cost | Slash::Skills | Slash::Copy => {
                     self.feed.push_user(text, false);
                     self.local(c);
                     return true;
@@ -223,6 +224,7 @@ impl App {
         match c {
             Slash::Help => self.help(),
             Slash::Cost => self.cost(),
+            Slash::Skills => self.skills(),
             Slash::Copy => match &self.answer {
                 Some(a) => {
                     self.feed.note(format!(
@@ -284,6 +286,36 @@ impl App {
                 fmt_tokens(m.task.output)
             ));
         }
+    }
+
+    /// `/skills`: what the project and the user offer, and how it loads.
+    fn skills(&mut self) {
+        let root = Path::new(&self.root);
+        let found = deeptui_tools::skill::find_all(root);
+        if found.is_empty() {
+            self.feed.note(format!(
+                "no skills: add {}/<name>/SKILL.md with `name` and `description` frontmatter",
+                deeptui_tools::skill::PROJECT_DIRS[0]
+            ));
+            return;
+        }
+        for k in &found {
+            self.feed.push(vec![
+                (format!("  {}", k.name), C_TOOL_NAME),
+                (
+                    format!(
+                        "  {} [{}]",
+                        k.description,
+                        k.path.strip_prefix(root).unwrap_or(&k.path).display()
+                    ),
+                    C_DIM,
+                ),
+            ]);
+        }
+        self.feed.note(format!(
+            "{} skill(s) — the agent loads one when a task matches",
+            found.len()
+        ));
     }
 
     fn tool_start(&mut self, name: &str, args: &str) {
@@ -794,6 +826,34 @@ mod tests {
         assert!(!a.quit);
         enter(&mut a, "/exit");
         assert!(a.quit);
+    }
+
+    #[test]
+    fn the_skills_command_lists_what_the_agent_may_load() {
+        let dir = std::env::temp_dir().join(format!("deeptui-app-skills-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".deeptui/skills/pdf")).unwrap();
+        std::fs::write(
+            dir.join(".deeptui/skills/pdf/SKILL.md"),
+            "---\nname: pdf\ndescription: Read PDFs.\n---\nbody",
+        )
+        .unwrap();
+        let mut a = App::new("m");
+        a.root = dir.display().to_string();
+        let (remote, _rx) = Remote::channel(4);
+        a.editor.insert_str("/skills");
+        press(&mut a, KeyCode::Enter, KeyModifiers::NONE, &remote);
+
+        let t = texts(&a);
+        assert!(
+            t.iter()
+                .any(|l| l.starts_with("  pdf") && l.contains("Read PDFs.")),
+            "{t:?}"
+        );
+        assert!(t.iter().any(|l| l.contains("skill(s)")), "{t:?}");
+        // the body is not printed: the list is what the agent may load
+        assert!(!t.iter().any(|l| l.contains("body")), "{t:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -48,12 +48,18 @@ struct Cli {
     /// Don't inject the repo map into the system prompt.
     #[arg(long)]
     no_map: bool,
+    /// Don't index project and user SKILL.md files in the system prompt.
+    #[arg(long)]
+    no_skills: bool,
     /// Repo-map budget in bytes (default 5000, max 60000).
     #[arg(long, value_name = "BYTES")]
     map_bytes: Option<usize>,
     /// Print the repo map for this directory and exit.
     #[arg(long)]
     dump_map: bool,
+    /// Print the skills found here (and the prompt index) and exit.
+    #[arg(long)]
+    dump_skills: bool,
     /// Write an example config file and exit.
     #[arg(long)]
     init: bool,
@@ -88,6 +94,7 @@ impl Cli {
             api_key: self.api_key.as_deref(),
             budget: self.budget,
             no_map: self.no_map,
+            no_skills: self.no_skills,
             map_bytes: self.map_bytes,
             no_update_check: self.no_update_check,
             max_rounds: self.max_rounds,
@@ -135,6 +142,20 @@ async fn main() -> Result<()> {
             "{}",
             deeptui_repomap::build(&root, settings::map_bytes(cli.map_bytes))
         );
+        return Ok(());
+    }
+    if cli.dump_skills {
+        let found = deeptui_tools::skill::find_all(&root);
+        if found.is_empty() {
+            println!(
+                "no skills: add {}/<name>/SKILL.md",
+                deeptui_tools::skill::PROJECT_DIRS[0]
+            );
+        } else {
+            println!("{}", deeptui_tools::skill::listing(&found, &root));
+            println!("\n--- what the system prompt carries ---\n");
+            print!("{}", deeptui_tools::skill::section(&found));
+        }
         return Ok(());
     }
     // Sweep leftovers of an earlier swap (Windows keeps the old image aside).
@@ -204,7 +225,7 @@ fn session(
     let provider = Provider::new(m.endpoint.clone())?;
     let toolbox = Toolbox::new(Workspace::new(root, s.bash_timeout_ms));
     let engine = Engine::new(provider, toolbox, m.tariff, m.context_budget).limits(s.limits);
-    let history = vec![Msg::system(system_prompt(root, s.map))];
+    let history = vec![Msg::system(system_prompt(root, s.map, s.skills))];
     let mut session = Session::new(engine, history)
         .tap(journal)
         .switchboard(models::Board::new(s));

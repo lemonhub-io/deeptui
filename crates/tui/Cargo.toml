@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 deeptui-core.workspace = true
 deeptui-engine.workspace = true
+deeptui-tools.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 unicode-width.workspace = true

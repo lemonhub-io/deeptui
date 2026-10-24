@@ -26,6 +26,7 @@ struct FileCfg {
     price_cached: Option<f64>,
     use_map: Option<bool>,
     map_bytes: Option<usize>,
+    use_skills: Option<bool>,
     update_check: Option<bool>,
     max_rounds: Option<usize>,
     max_task_cost: Option<f64>,
@@ -50,6 +51,7 @@ pub struct Flags<'a> {
     pub budget: Option<usize>,
     pub no_map: bool,
     pub map_bytes: Option<usize>,
+    pub no_skills: bool,
     pub no_update_check: bool,
     pub max_rounds: Option<usize>,
     pub max_cost: Option<f64>,
@@ -152,6 +154,8 @@ pub struct Settings {
     /// Byte budget of the repo map injected into the system prompt;
     /// `None` leaves the map out.
     pub map: Option<usize>,
+    /// Index the `SKILL.md` skills the project and user carry.
+    pub skills: bool,
     /// Look for a newer release on startup (cached, at most once a day).
     pub update_check: bool,
     /// Rounds and dollars one task may take.
@@ -304,6 +308,7 @@ impl Settings {
             caps,
             bash_timeout_ms: f.bash_timeout_ms.unwrap_or(30_000),
             map: use_map.then(|| map_budget(flags.map_bytes, f.map_bytes)),
+            skills: !flags.no_skills && f.use_skills.unwrap_or(true),
             // set `DEEPTUI_NO_UPDATE_CHECK` to anything non-empty to opt out
             update_check: !flags.no_update_check
                 && f.update_check.unwrap_or(true)
@@ -359,6 +364,7 @@ fn write_example_at(p: &Path) -> Result<()> {
          # price_cached = 0.003\n\
          # use_map = true\n\
          # map_bytes = 5000   # repo map size in bytes\n\
+         # use_skills = true  # index SKILL.md files (.deeptui/skills, skills, ...)\n\
          # update_check = true   # look for the required release once a day\n\
          # max_rounds = 60       # model rounds per task; the last one reports status (0 = no cap)\n\
          # max_task_cost = 0.50  # $ per task before it is stopped (0 = no cap)\n\

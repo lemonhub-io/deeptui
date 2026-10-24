@@ -13,6 +13,8 @@ pub(crate) enum Slash {
     Retry,
     Context,
     Cost,
+    /// The `SKILL.md` files the agent may load.
+    Skills,
     Copy,
     Exit,
 }
@@ -77,6 +79,12 @@ pub(crate) const COMMANDS: &[Spec] = &[
     ),
     spec("context", "", "what fills the context", Slash::Context),
     spec("cost", "", "this session's tokens and spend", Slash::Cost),
+    spec(
+        "skills",
+        "",
+        "the skills the agent can load (SKILL.md)",
+        Slash::Skills,
+    ),
     spec(
         "copy",
         "",
@@ -227,6 +235,7 @@ mod tests {
         assert_eq!(parse("/comp"), Command(Slash::Compact));
         assert_eq!(parse("/resume"), Command(Slash::Resume(None)));
         assert_eq!(parse("/resume  3 "), Command(Slash::Resume(Some(3))));
+        assert_eq!(parse("/skills"), Command(Slash::Skills));
         assert_eq!(parse("/m"), Command(Slash::Model(String::new())));
         assert_eq!(
             parse("/model add  openrouter/qwen/qwen3-coder"),
@@ -262,6 +271,7 @@ mod tests {
         assert_eq!(complete("/res").as_deref(), Some("/resume "));
         assert_eq!(complete("/mo").as_deref(), Some("/model "));
         assert_eq!(complete("/q").as_deref(), Some("/exit"));
+        assert_eq!(complete("/sk").as_deref(), Some("/skills"));
         assert_eq!(complete("/con").as_deref(), Some("/context"));
         assert_eq!(complete("/r").as_deref(), Some("/re"));
         // nothing to add, or nothing to complete

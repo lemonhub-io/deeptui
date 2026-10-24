@@ -13,6 +13,7 @@ mod map;
 mod patch;
 mod search;
 mod shell;
+pub mod skill;
 mod workspace;
 
 pub use args::Args;
@@ -57,6 +58,7 @@ pub const TOOLS: &[Tool] = &[
     search::GLOB,
     fs::LS,
     map::REPOMAP,
+    skill::SKILL,
 ];
 
 pub fn find(name: &str) -> Option<&'static Tool> {
@@ -141,7 +143,8 @@ mod tests {
                 "grep",
                 "glob",
                 "ls",
-                "repomap"
+                "repomap",
+                "skill"
             ]
         );
         for s in &specs {
@@ -162,7 +165,7 @@ mod tests {
         }
         // observing tools are reads; anything that mutates, executes or is
         // unknown is a write
-        for r in ["read_file", "grep", "glob", "ls", "repomap"] {
+        for r in ["read_file", "grep", "glob", "ls", "repomap", "skill"] {
             assert_eq!(tb.effect(r), Effect::Read, "{r}");
         }
         for w in ["bash", "edit_file", "write_file", "nope"] {
