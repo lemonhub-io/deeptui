@@ -1,0 +1,18 @@
+[package]
+name = "deeptui-models"
+description = "Which models deeptui can reach: the models.dev catalog and the user's own list."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+flate2.workspace = true
+
+[dev-dependencies]
+deeptui-testkit.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }

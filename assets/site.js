@@ -256,7 +256,7 @@
   const installMethods = {
     macos: {
       caption: 'ONE COMMAND. SHA256-VERIFIED.',
-      command: 'curl -fsSL https://raw.githubusercontent.com/lemonhub-io/deeptui/v0.1.0-beta/install.sh | bash',
+      command: 'curl -fsSL https://raw.githubusercontent.com/lemonhub-io/deeptui/v0.1.1-beta/install.sh | bash',
       help: 'The installer verifies the required beta and migrates legacy ragent settings and usage history. Existing DeepTUI settings are preserved.',
     },
     source: {
@@ -267,7 +267,7 @@
     windows: {
       caption: 'A NATIVE WINDOWS BINARY.',
       command: '# Download and extract the Windows .zip from Releases, then:\n.\\deeptui.exe --init\n.\\deeptui.exe',
-      help: 'Choose the x86_64-pc-windows-msvc.zip asset for v0.1.0-beta when available. ',
+      help: 'Choose the x86_64-pc-windows-msvc.zip asset for v0.1.1-beta when available. ',
     },
   };
   const installTabs = $$('[data-install]');

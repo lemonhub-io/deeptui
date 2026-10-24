@@ -67,7 +67,7 @@ pub fn sse(payloads: &[&str]) -> String {
 pub struct Stub {
     addr: SocketAddr,
     reqs: Arc<Mutex<Vec<String>>>,
-    tx: std::sync::mpsc::Sender<(u16, String)>,
+    tx: std::sync::mpsc::Sender<(u16, String, String)>,
 }
 
 impl Default for Stub {
@@ -81,17 +81,17 @@ impl Stub {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let addr = listener.local_addr().unwrap();
         let reqs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let (tx, rx) = std::sync::mpsc::channel::<(u16, String)>();
+        let (tx, rx) = std::sync::mpsc::channel::<(u16, String, String)>();
         let served = Arc::clone(&reqs);
         std::thread::spawn(move || {
-            while let Ok((status, body)) = rx.recv() {
+            while let Ok((status, headers, body)) = rx.recv() {
                 let Ok((mut s, _)) = listener.accept() else {
                     return;
                 };
                 served.lock().unwrap().push(read_request(&mut s));
                 let head = format!(
                     "HTTP/1.1 {status} {}\r\nContent-Type: text/event-stream\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                     {headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
                     reason(status),
                     body.len()
                 );
@@ -115,15 +115,26 @@ impl Stub {
 
     /// Serve `status` + `body` on the next connection, then close it.
     pub fn enqueue(&self, status: u16, body: impl Into<String>) {
-        let _ = self.tx.send((status, body.into()));
+        self.enqueue_with(status, &[], body);
+    }
+
+    /// [`enqueue`](Stub::enqueue) with extra response headers.
+    pub fn enqueue_with(&self, status: u16, headers: &[(&str, &str)], body: impl Into<String>) {
+        let headers = headers
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}\r\n"))
+            .collect();
+        let _ = self.tx.send((status, headers, body.into()));
     }
 }
 
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        304 => "Not Modified",
         400 => "Bad Request",
         401 => "Unauthorized",
+        404 => "Not Found",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
         _ => "Status",

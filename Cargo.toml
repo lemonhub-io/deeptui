@@ -1,10 +1,11 @@
-# One binary, eight crates. The dependency graph *is* the architecture:
+# One binary, nine crates. The dependency graph *is* the architecture:
 #
 #   deeptui-core      pure domain — transcript, turn machine, events, prices (no IO)
 #   deeptui-provider  OpenAI-compatible SSE wire           ─┐
 #   deeptui-repomap   repo skeleton + the project walk      │ adapters: each owns
 #   deeptui-tools     effect-typed tool capabilities        │ one kind of IO
-#   deeptui-update    self-update from GitHub releases     ─┘
+#   deeptui-update    self-update from GitHub releases      │
+#   deeptui-models    the models.dev catalog + your models ─┘
 #   deeptui-engine    interprets the turn machine; the session actor
 #   deeptui-tui       ratatui frontend — a projection of the event stream
 #   deeptui (here)    composition root: settings, wiring, headless frontend
@@ -17,7 +18,7 @@ default-members = [".", "crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0-beta"
+version = "0.1.1-beta"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -29,6 +30,7 @@ deeptui-tools = { path = "crates/tools" }
 deeptui-engine = { path = "crates/engine" }
 deeptui-tui = { path = "crates/tui" }
 deeptui-update = { path = "crates/update" }
+deeptui-models = { path = "crates/models" }
 deeptui-testkit = { path = "crates/testkit" }
 
 tokio = { version = "1", default-features = false }
@@ -67,8 +69,10 @@ deeptui-tools.workspace = true
 deeptui-engine.workspace = true
 deeptui-tui.workspace = true
 deeptui-update.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "signal", "sync"] }
+deeptui-models.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "signal", "sync", "time"] }
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 anyhow.workspace = true
 clap.workspace = true

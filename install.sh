@@ -14,8 +14,8 @@ set -euo pipefail
 
 REPO="lemonhub-io/deeptui"
 BIN="deeptui"
-INSTALLER_VERSION="0.1.0-beta"
-REQUIRED_TAG="v0.1.0-beta"
+INSTALLER_VERSION="0.1.1-beta"
+REQUIRED_TAG="v0.1.1-beta"
 RELEASE_BASE="https://github.com/$REPO/releases"
 
 # Flags / env defaults. DEEPTUI_VERSION pins the release tag; DEEPTUI_INSTALL_DIR
@@ -56,7 +56,7 @@ ${c_bold}DeepTUI installer${c_off} $INSTALLER_VERSION
 Usage: install.sh [options]
 
 Options:
-  -t, --tag TAG        Required release (default: v0.1.0-beta; retired tags are rejected)
+  -t, --tag TAG        Required release (default: v0.1.1-beta; retired tags are rejected)
   -b, --bin-dir DIR    Install the binary into DIR
       --prefix DIR     Install into DIR/bin (default: ~/.local, or /usr/local as root)
       --target TRIPLE  Force a release target triple (e.g. x86_64-unknown-linux-gnu)

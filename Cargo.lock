@@ -338,12 +338,13 @@ dependencies = [
 
 [[package]]
 name = "deeptui"
-version = "0.1.0-beta"
+version = "0.1.1-beta"
 dependencies = [
  "anyhow",
  "clap",
  "deeptui-core",
  "deeptui-engine",
+ "deeptui-models",
  "deeptui-provider",
  "deeptui-repomap",
  "deeptui-testkit",
@@ -352,13 +353,14 @@ dependencies = [
  "deeptui-update",
  "dirs",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
 ]
 
 [[package]]
 name = "deeptui-core"
-version = "0.1.0-beta"
+version = "0.1.1-beta"
 dependencies = [
  "serde",
  "serde_json",
@@ -366,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "deeptui-engine"
-version = "0.1.0-beta"
+version = "0.1.1-beta"
 dependencies = [
  "deeptui-core",
  "deeptui-provider",
@@ -379,8 +381,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "deeptui-models"
+version = "0.1.1-beta"
+dependencies = [
+ "deeptui-testkit",
+ "flate2",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "deeptui-provider"
-version = "0.1.0-beta"
+version = "0.1.1-beta"
 dependencies = [
  "anyhow",
  "deeptui-core",
@@ -393,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "deeptui-repomap"
-version = "0.1.0-beta"
+version = "0.1.1-beta"
 dependencies = [
  "deeptui-testkit",
  "ignore",
@@ -402,16 +417,17 @@ dependencies = [
 
 [[package]]
 name = "deeptui-testkit"
-version = "0.1.0-beta"
+version = "0.1.1-beta"
 
 [[package]]
 name = "deeptui-tools"
-version = "0.1.0-beta"
+version = "0.1.1-beta"
 dependencies = [
  "deeptui-core",
  "deeptui-repomap",
  "deeptui-testkit",
  "ignore",
+ "libc",
  "regex",
  "serde_json",
  "tokio",
@@ -419,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "deeptui-tui"
-version = "0.1.0-beta"
+version = "0.1.1-beta"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -434,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "deeptui-update"
-version = "0.1.0-beta"
+version = "0.1.1-beta"
 dependencies = [
  "anyhow",
  "deeptui-testkit",

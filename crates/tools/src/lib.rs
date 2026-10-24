@@ -10,6 +10,7 @@
 mod args;
 mod fs;
 mod map;
+mod patch;
 mod search;
 mod shell;
 mod workspace;
@@ -100,9 +101,10 @@ impl Toolbox {
     /// Run one call with the model's raw JSON arguments.
     pub async fn call(&self, name: &str, raw_args: &str) -> Output {
         let Some(tool) = find(name) else {
-            return Err(format!("unknown tool: {name}"));
+            let have: Vec<&str> = TOOLS.iter().map(|t| t.name).collect();
+            return Err(format!("unknown tool: {name} (have: {})", have.join(", ")));
         };
-        let args = Args::parse(raw_args);
+        let args = Args::parse(raw_args)?;
         match tool.exec {
             Exec::Async(run) => run(&self.ws, &args).await,
             Exec::Blocking(run) => {
@@ -204,15 +206,17 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, "empty project");
 
-        assert_eq!(
-            run("nope", json!({})).await.unwrap_err(),
-            "unknown tool: nope"
+        let err = run("nope", json!({})).await.unwrap_err();
+        assert!(
+            err.starts_with("unknown tool: nope (have: read_file, edit_file,"),
+            "{err}"
         );
-        // malformed arguments read as an empty object, so the tool names
-        // what is missing instead of failing to parse
-        assert_eq!(
-            tb.call("grep", "{not json").await.unwrap_err(),
-            "missing pattern"
-        );
+        // malformed arguments say so, instead of reading as an empty object
+        // whose first required field then goes "missing"
+        let err = tb.call("grep", "{not json").await.unwrap_err();
+        assert!(err.starts_with("arguments are not valid JSON"), "{err}");
+        // near-JSON is repaired and runs
+        let out = tb.call("bash", "{\"cmd\":\"echo 'a\nb'\"}").await.unwrap();
+        assert!(out.starts_with("a\nb\n"), "{out}");
     }
 }

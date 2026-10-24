@@ -24,11 +24,11 @@ class MigrationTests(unittest.TestCase):
         self.data = self.root / 'data'
         for path in [self.bin, self.commands, self.source / 'target/release']:
             path.mkdir(parents=True)
-        (self.source / 'Cargo.toml').write_text('[package]\nname = "deeptui"\nversion = "0.1.0-beta"\n')
+        (self.source / 'Cargo.toml').write_text('[package]\nname = "deeptui"\nversion = "0.1.1-beta"\n')
         self.executable(self.commands / 'cargo', '#!/bin/sh\nexit 0\n')
         self.executable(self.commands / 'rustc', '#!/bin/sh\nprintf "host: x86_64-unknown-linux-gnu\\n"\n')
         self.payload = self.source / 'target/release/deeptui'
-        self.write_payload('0.1.0-beta')
+        self.write_payload('0.1.1-beta')
         self.env = {key: value for key, value in os.environ.items()
                     if not key.startswith(('DEEPTUI_', 'RAGENT_'))}
         self.env.update(PATH=str(self.commands) + os.pathsep + os.environ['PATH'],
@@ -58,10 +58,10 @@ class MigrationTests(unittest.TestCase):
     def release_fixture(self):
         assets = self.root / 'release'
         assets.mkdir()
-        name = 'deeptui-v0.1.0-beta-x86_64-unknown-linux-musl.tar.gz'
+        name = 'deeptui-v0.1.1-beta-x86_64-unknown-linux-musl.tar.gz'
         archive = assets / name
         with tarfile.open(archive, 'w:gz') as bundle:
-            bundle.add(self.payload, arcname='deeptui-v0.1.0-beta-x86_64-unknown-linux-musl/deeptui')
+            bundle.add(self.payload, arcname='deeptui-v0.1.1-beta-x86_64-unknown-linux-musl/deeptui')
         sums = assets / 'SHA256SUMS.txt'
         sums.write_text(f'{hashlib.sha256(archive.read_bytes()).hexdigest()}  {name}\n')
         self.env['DEEPTUI_TEST_ASSETS'] = str(assets)
@@ -106,7 +106,7 @@ if [ -n "$destination" ]; then cp "$asset" "$destination"; fi
         self.assertEqual(stat.S_IMODE(stats.stat().st_mode), 0o600)
         self.assertEqual(tomllib.loads(config.read_text())['api_key'], 'old-test-key')
         result = subprocess.check_output([str(self.bin / 'ragent'), '--version'], env=self.env, text=True)
-        self.assertEqual(result.strip(), 'deeptui 0.1.0-beta')
+        self.assertEqual(result.strip(), 'deeptui 0.1.1-beta')
         result = subprocess.check_output([str(self.bin / 'ragent'), 'a prompt with spaces'], env=self.env, text=True)
         self.assertEqual(result.strip(), 'a prompt with spaces')
         model_env = self.env | {'RAGENT_MODEL': 'legacy-model'}
@@ -146,15 +146,20 @@ if [ -n "$destination" ]; then cp "$asset" "$destination"; fi
                 self.assertIn('unsupported', result.stderr)
                 self.assertEqual(installed.read_bytes(), before)
 
+    def test_previous_beta_cannot_replace_the_current_release(self):
+        result = self.install('--tag', 'v0.1.0-beta', expected=1)
+        self.assertIn('unsupported', result.stderr)
+        self.assertFalse((self.bin / 'deeptui').exists())
+
     def test_latest_alias_and_unprefixed_beta_resolve_without_network(self):
-        for tag in ['latest', '0.1.0-beta']:
+        for tag in ['latest', '0.1.1-beta']:
             with self.subTest(tag=tag):
                 self.install('--tag', tag)
                 self.assertTrue((self.bin / 'deeptui').is_file())
 
     def test_stable_binary_cannot_masquerade_as_the_beta(self):
         self.executable(self.bin / 'deeptui', '#!/bin/sh\necho existing-install\n')
-        self.write_payload('0.1.0')
+        self.write_payload('0.1.1')
         result = self.install(expected=1)
         self.assertIn('refusing to install', result.stderr)
         self.assertIn('existing-install', (self.bin / 'deeptui').read_text())
@@ -170,7 +175,7 @@ if [ -n "$destination" ]; then cp "$asset" "$destination"; fi
     def test_prebuilt_release_is_verified_and_installed(self):
         self.release_fixture()
         self.download()
-        self.assertEqual(subprocess.check_output([str(self.bin / 'deeptui'), '--version'], text=True).strip(), 'deeptui 0.1.0-beta')
+        self.assertEqual(subprocess.check_output([str(self.bin / 'deeptui'), '--version'], text=True).strip(), 'deeptui 0.1.1-beta')
 
     def test_missing_checksum_cannot_replace_an_existing_install(self):
         self.release_fixture().unlink()
@@ -181,7 +186,7 @@ if [ -n "$destination" ]; then cp "$asset" "$destination"; fi
 
     def test_wrong_checksum_cannot_replace_an_existing_install(self):
         sums = self.release_fixture()
-        sums.write_text('0' * 64 + '  deeptui-v0.1.0-beta-x86_64-unknown-linux-musl.tar.gz\n')
+        sums.write_text('0' * 64 + '  deeptui-v0.1.1-beta-x86_64-unknown-linux-musl.tar.gz\n')
         self.executable(self.bin / 'deeptui', '#!/bin/sh\necho existing-install\n')
         result = self.download(expected=1)
         self.assertIn('checksum mismatch', result.stderr)

@@ -18,13 +18,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The only supported release after retiring the ragent version sequence.
-pub const REQUIRED_TAG: &str = "v0.1.0-beta";
+pub const REQUIRED_TAG: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 /// Resolve the supported beta explicitly: GitHub's latest-release endpoint
 /// excludes prereleases, and the old stable version numbers were higher.
 const RELEASES: &str = "https://github.com/lemonhub-io/deeptui/releases";
-const REQUIRED_API: &str =
-    "https://api.github.com/repos/lemonhub-io/deeptui/releases/tags/v0.1.0-beta";
+const REQUIRED_API: &str = concat!(
+    "https://api.github.com/repos/lemonhub-io/deeptui/releases/tags/v",
+    env!("CARGO_PKG_VERSION")
+);
 
 /// A completed check is trusted for this long — one round-trip per day.
 pub const CHECK_TTL: u64 = 24 * 60 * 60;
@@ -46,7 +48,7 @@ pub fn target_triple() -> Option<&'static str> {
     })
 }
 
-/// `deeptui-v0.1.0-beta-x86_64-unknown-linux-musl.tar.gz` (`.zip` on Windows),
+/// `deeptui-v0.1.1-beta-x86_64-unknown-linux-musl.tar.gz` (`.zip` on Windows),
 /// matching `.github/workflows/release.yml`.
 pub fn asset_name(tag: &str, triple: &str) -> String {
     let ext = if triple.contains("windows") {
@@ -88,7 +90,7 @@ pub fn is_newer(current: &str, candidate: &str) -> bool {
     apre.is_some() && bpre.is_none()
 }
 
-/// `0.1.0-beta` → `v0.1.0-beta` (release tags always carry the `v`).
+/// `0.1.1-beta` → `v0.1.1-beta` (release tags always carry the `v`).
 pub fn normalize_tag(tag: &str) -> Result<String> {
     let t = tag.trim();
     if t.is_empty() || !t.chars().any(|c| c.is_ascii_digit()) {
@@ -110,7 +112,7 @@ fn supported_tag(tag: &str) -> Result<String> {
 }
 
 /// Compare identities across the version reset, rather than interpreting a
-/// migration from ragent 0.6.0 as a downgrade to DeepTUI 0.1.0-beta.
+/// migration from ragent 0.6.0 as a downgrade to DeepTUI 0.1.1-beta.
 fn needs_migration(current: &str, target: &str) -> bool {
     target == REQUIRED_TAG && normalize_tag(current).ok().as_deref() != Some(REQUIRED_TAG)
 }
@@ -651,6 +653,7 @@ mod tests {
     const VS: &[&str] = &[
         "v0.1.0-beta",
         "v0.1.0",
+        "v0.1.1-beta",
         "v0.4.0",
         "v0.4.1",
         "v0.9.9",
@@ -680,8 +683,8 @@ mod tests {
         assert!(is_newer("v1.2", "v1.2.1"));
         // junk never looks newer
         assert!(!is_newer("v1.0.0", "nightly"));
-        assert_eq!(normalize_tag("0.1.0-beta").unwrap(), "v0.1.0-beta");
-        assert_eq!(normalize_tag(" v0.1.0-beta ").unwrap(), "v0.1.0-beta");
+        assert_eq!(normalize_tag("0.1.1-beta").unwrap(), "v0.1.1-beta");
+        assert_eq!(normalize_tag(" v0.1.1-beta ").unwrap(), "v0.1.1-beta");
         assert!(normalize_tag("").is_err());
         assert!(normalize_tag("latest").is_err());
     }
@@ -689,9 +692,17 @@ mod tests {
     #[test]
     fn only_the_beta_can_be_an_install_or_update_target() {
         assert_eq!(format!("v{}", current_version()), REQUIRED_TAG);
-        assert_eq!(supported_tag("0.1.0-beta").unwrap(), REQUIRED_TAG);
+        assert_eq!(supported_tag("0.1.1-beta").unwrap(), REQUIRED_TAG);
         for tag in [
-            "v0.1.0", "v0.2.0", "v0.3.0", "v0.4.0", "v0.5.0", "v0.6.0", "v99.0.0",
+            "v0.1.0-beta",
+            "v0.1.0",
+            "v0.1.1",
+            "v0.2.0",
+            "v0.3.0",
+            "v0.4.0",
+            "v0.5.0",
+            "v0.6.0",
+            "v99.0.0",
         ] {
             assert!(supported_tag(tag).is_err(), "{tag} must be refused");
             assert!(!needs_migration(current_version(), tag));
@@ -700,18 +711,26 @@ mod tests {
 
     #[test]
     fn version_reset_requires_migration_even_from_higher_retired_numbers() {
-        for current in ["0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0"] {
+        for current in [
+            "0.1.0-beta",
+            "0.1.0",
+            "0.2.0",
+            "0.3.0",
+            "0.4.0",
+            "0.5.0",
+            "0.6.0",
+        ] {
             assert!(needs_migration(current, REQUIRED_TAG), "{current}");
         }
-        assert!(!needs_migration("0.1.0-beta", REQUIRED_TAG));
+        assert!(!needs_migration("0.1.1-beta", REQUIRED_TAG));
         assert!(!needs_migration(REQUIRED_TAG, REQUIRED_TAG));
     }
 
     #[test]
     fn downloaded_binary_must_match_the_entire_prerelease_version() {
-        assert!(binary_matches_tag("0.1.0-beta", REQUIRED_TAG));
-        assert!(!binary_matches_tag("0.1.0", REQUIRED_TAG));
-        assert!(!binary_matches_tag("0.1.0-beta.1", REQUIRED_TAG));
+        assert!(binary_matches_tag("0.1.1-beta", REQUIRED_TAG));
+        assert!(!binary_matches_tag("0.1.1", REQUIRED_TAG));
+        assert!(!binary_matches_tag("0.1.1-beta.1", REQUIRED_TAG));
         assert!(!binary_matches_tag("0.6.0", REQUIRED_TAG));
     }
 
@@ -719,12 +738,12 @@ mod tests {
     fn asset_names_match_the_release_workflow() {
         let t = "x86_64-unknown-linux-musl";
         assert_eq!(
-            asset_name("v0.1.0-beta", t),
-            "deeptui-v0.1.0-beta-x86_64-unknown-linux-musl.tar.gz"
+            asset_name("v0.1.1-beta", t),
+            "deeptui-v0.1.1-beta-x86_64-unknown-linux-musl.tar.gz"
         );
         assert_eq!(
-            asset_name("v0.1.0-beta", "x86_64-pc-windows-msvc"),
-            "deeptui-v0.1.0-beta-x86_64-pc-windows-msvc.zip"
+            asset_name("v0.1.1-beta", "x86_64-pc-windows-msvc"),
+            "deeptui-v0.1.1-beta-x86_64-pc-windows-msvc.zip"
         );
         // this host must map to one of the published triples
         assert!(target_triple().is_some(), "no asset for this platform");

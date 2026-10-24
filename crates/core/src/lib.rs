@@ -17,9 +17,9 @@ pub mod tariff;
 pub mod text;
 pub mod turn;
 
-pub use event::{Event, Outcome, Projection, Receipt, Usage};
+pub use event::{Ask, Choice, Event, Outcome, Projection, Receipt, Usage};
 pub use ledger::Ledger;
 pub use msg::{FnCall, Msg, Role, ToolCall};
 pub use schedule::Effect;
 pub use tariff::Tariff;
-pub use turn::{Delta, Next, StreamEnd, ToolOutput, Turn};
+pub use turn::{Delta, Limits, Next, StreamEnd, ToolOutput, Turn};

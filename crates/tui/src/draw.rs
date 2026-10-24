@@ -3,6 +3,8 @@
 use crate::app::App;
 use crate::editor::{cursor_pos, input_lines, input_rows};
 use crate::feed::Feed;
+use crate::picker::Picker;
+use crate::slash;
 use crate::styled::SLine;
 use crate::theme::*;
 use crate::Intro;
@@ -10,7 +12,7 @@ use deeptui_core::text::fmt_tokens;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -24,8 +26,13 @@ pub(crate) fn banner(feed: &mut Feed, intro: &Intro) {
     ]);
     feed.note("A little space for deep work.");
     feed.push(Vec::new());
+    let model = if intro.ready {
+        intro.model.clone()
+    } else {
+        "none yet".into()
+    };
     for (label, value) in [
-        ("model", intro.model.clone()),
+        ("model", model),
         ("root", intro.root.display().to_string()),
         (
             "context",
@@ -45,20 +52,25 @@ pub(crate) fn banner(feed: &mut Feed, intro: &Intro) {
             life.avg_ok().unwrap_or(0.0)
         ));
     }
-    if !intro.priced {
+    if intro.ready && !intro.priced {
         feed.note("pricing unknown — set price_input/price_output in config.toml");
     }
     if let Some(tag) = &intro.update {
         feed.note(format!("{tag} available — deeptui --self-update"));
     }
     feed.push(Vec::new());
-    feed.push(vec![
-        ("  Try a task  ".into(), C_DIM),
+    let (lead, line) = if intro.ready {
         (
-            "Find the bug. Explain this repo. Add a test.".into(),
-            C_CODE,
-        ),
-    ]);
+            "  Try a task  ",
+            "Find the bug. Explain this repo. Add a test.",
+        )
+    } else {
+        (
+            "  Get started  ",
+            "choose a provider, paste its API key, pick a model.",
+        )
+    };
+    feed.push(vec![(lead.into(), C_DIM), (line.into(), C_CODE)]);
     feed.push(Vec::new());
 }
 
@@ -112,6 +124,104 @@ pub(crate) fn regions(area: Rect, text: &str) -> [Rect; 4] {
     .areas(body)
 }
 
+/// While a slash command is half typed, what it could become — floated
+/// over the bottom of the chat, just above the composer.
+fn commands(f: &mut Frame, text: &str, chat: Rect) {
+    let hints = slash::hints(text);
+    if hints.is_empty() || chat.height < 3 || chat.width < 20 {
+        return;
+    }
+    let h = (hints.len() as u16 + 2).min(chat.height);
+    let area = Rect::new(chat.x, chat.bottom() - h, chat.width.min(72), h);
+    let rows: Vec<Line> = hints
+        .iter()
+        .map(|s| {
+            Line::from(vec![
+                Span::styled(format!("/{:<8}", s.name), C_TOOL_NAME),
+                Span::styled(format!("{:<5}", s.args), C_CODE),
+                Span::styled(s.help, C_DIM),
+            ])
+        })
+        .collect();
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(rows).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(C_GUTTER)
+                .style(Style::new().bg(PANEL))
+                .padding(Padding::horizontal(1))
+                .title_top(Line::from(Span::styled(" Tab completes ", C_DIM)).right_aligned()),
+        ),
+        area,
+    );
+}
+
+/// The session's question: a list over the bottom of the chat, the
+/// selection kept in view.
+fn picker(f: &mut Frame, p: &Picker, chat: Rect) {
+    if chat.height < 4 || chat.width < 20 {
+        return;
+    }
+    let rows = p.rows();
+    let h = (rows.len().max(1) as u16 + 2).min(chat.height);
+    let area = Rect::new(chat.x, chat.bottom() - h, chat.width, h);
+    let shown = h.saturating_sub(2) as usize;
+    let top = p.sel.saturating_sub(shown.saturating_sub(1));
+    let label_w = rows
+        .iter()
+        .map(|c| c.label.width())
+        .max()
+        .unwrap_or(0)
+        .min(chat.width as usize / 2);
+    let lines: Vec<Line> = if rows.is_empty() {
+        vec![Line::from(Span::styled("nothing matches", C_DIM))]
+    } else {
+        rows.iter()
+            .enumerate()
+            .skip(top)
+            .take(shown)
+            .map(|(i, c)| {
+                let on = i == p.sel;
+                let pad = " ".repeat(label_w.saturating_sub(c.label.width()));
+                Line::from(vec![
+                    Span::styled(if on { "› " } else { "  " }, C_USER_MARK),
+                    Span::styled(
+                        format!("{}{pad}", c.label),
+                        if on { C_TITLE } else { Style::new().fg(FG) },
+                    ),
+                    Span::styled(format!("  {}", c.detail), C_DIM),
+                ])
+                .style(if on {
+                    Style::new().bg(EDGE)
+                } else {
+                    Style::new()
+                })
+            })
+            .collect()
+    };
+    let foot = if p.filter.is_empty() {
+        " ↑↓ choose · Enter · Esc · type to filter ".to_string()
+    } else {
+        format!(" filter: {} ", p.filter)
+    };
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(C_USER_MARK)
+                .style(Style::new().bg(PANEL))
+                .padding(Padding::horizontal(1))
+                .title_top(Line::from(Span::styled(format!(" {} ", p.title), C_TITLE)))
+                .title_bottom(Line::from(Span::styled(foot, C_DIM)).right_aligned()),
+        ),
+        area,
+    );
+}
+
 fn header(f: &mut Frame, app: &App, area: Rect, spin: char) {
     if area.is_empty() {
         return;
@@ -120,12 +230,14 @@ fn header(f: &mut Frame, app: &App, area: Rect, spin: char) {
         " OFFLINE "
     } else if app.meter.running {
         " WORKING "
+    } else if !app.ready {
+        " SETUP "
     } else {
         " READY "
     };
     let state_style = if app.agent_dead {
         C_ERR
-    } else if app.meter.running {
+    } else if app.meter.running || !app.ready {
         C_TITLE
     } else {
         C_OK
@@ -229,6 +341,11 @@ pub(crate) fn render(f: &mut Frame, app: &mut App) {
         .map(line)
         .collect();
     f.render_widget(Paragraph::new(Text::from(visible)), chat);
+    match &app.picker {
+        Some(p) => picker(f, p, chat),
+        None if app.secret.is_none() => commands(f, &app.editor.text, chat),
+        None => {}
+    }
 
     let ed = &mut app.editor;
     let m = &app.meter;
@@ -240,10 +357,24 @@ pub(crate) fn render(f: &mut Frame, app: &mut App) {
         } else {
             C_USER_MARK
         };
-        let action = if m.running {
-            " Enter queues "
-        } else {
-            " Enter sends "
+        let secret = app.secret.as_ref();
+        let (title, action, keys, placeholder) = match secret {
+            Some(s) => (
+                format!(" ◇  {} ", s.title),
+                " Enter saves · Esc cancels ",
+                " hidden as you type · never shown or kept in history ",
+                "paste it here",
+            ),
+            None => (
+                " ❯  Ask DeepTUI ".to_string(),
+                if m.running {
+                    " Enter queues "
+                } else {
+                    " Enter sends "
+                },
+                " / commands   Alt-Enter newline   ↑↓ history   Ctrl-C quit ",
+                "ask anything — / for commands",
+            ),
         };
         let mut block = Block::default()
             .borders(Borders::ALL)
@@ -251,29 +382,33 @@ pub(crate) fn render(f: &mut Frame, app: &mut App) {
             .border_style(border)
             .style(Style::new().bg(PANEL))
             .padding(Padding::horizontal(1))
-            .title_top(Line::from(Span::styled(" ❯  Ask DeepTUI ", C_TITLE)));
-        if input_a.width >= 38 {
+            .title_top(Line::from(Span::styled(title.clone(), C_TITLE)));
+        if input_a.width as usize >= title.width() + action.width() + 4 {
             block = block.title_top(Line::from(Span::styled(action, C_DIM)).right_aligned());
         }
-        if input_a.width >= 62 {
-            block = block.title_bottom(
-                Line::from(Span::styled(
-                    " Alt-Enter newline   ↑↓ history   Ctrl-C quit ",
-                    C_DIM,
-                ))
-                .right_aligned(),
-            );
+        if input_a.width >= 70 {
+            block = block.title_bottom(Line::from(Span::styled(keys, C_DIM)).right_aligned());
         }
         let inner = block.inner(input_a);
         let iw = inner.width as usize;
-        let (cur_row, cur_col) = cursor_pos(&ed.text[..ed.cur], iw);
+        // a secret is drawn as dots, one per character, cursor and all
+        let masked;
+        let (text, cur) = match secret {
+            Some(_) => {
+                masked = "•".repeat(ed.text.chars().count());
+                let before = ed.text[..ed.cur].chars().count();
+                (masked.as_str(), before * '•'.len_utf8())
+            }
+            None => (ed.text.as_str(), ed.cur),
+        };
+        let (cur_row, cur_col) = cursor_pos(&text[..cur], iw);
         ed.scroll = (cur_row as u16).saturating_sub(inner.height.saturating_sub(1));
-        let hint = ed.text.is_empty();
+        let hint = text.is_empty();
         let input_text = if hint {
-            Text::from("ask anything…")
+            Text::from(placeholder)
         } else {
             Text::from(
-                input_lines(&ed.text, iw)
+                input_lines(text, iw)
                     .into_iter()
                     .map(Line::from)
                     .collect::<Vec<_>>(),
@@ -311,6 +446,8 @@ pub(crate) fn render(f: &mut Frame, app: &mut App) {
         "offline".into()
     } else if m.running {
         format!("step {} · {:.0}s", m.round, elapsed)
+    } else if !app.ready {
+        "no model yet".into()
     } else {
         "idle".into()
     };
@@ -369,6 +506,7 @@ mod tests {
             lifetime: Ledger::default(),
             priced: true,
             update: None,
+            ready: true,
         }
     }
 
@@ -592,5 +730,73 @@ mod tests {
             "tool error:\n{s}"
         );
         assert!(s.contains("1✓ 2✗"), "counters:\n{s}");
+    }
+
+    #[test]
+    fn a_half_typed_command_floats_its_candidates_over_the_chat() {
+        let mut app = App::new("test-model");
+        app.editor.insert_str("/co");
+        let s = draw(&mut app, 90, 30);
+        for want in ["/compact", "/context", "/cost", "/copy", "Tab completes"] {
+            assert!(s.contains(want), "{want}:\n{s}");
+        }
+        assert!(!s.contains("/resume"), "{s}");
+        // gone once the line is a prompt
+        app.editor.insert_str("mpact now");
+        let s = draw(&mut app, 90, 30);
+        assert!(!s.contains("Tab completes"), "{s}");
+    }
+
+    #[test]
+    fn a_first_run_asks_for_a_provider_then_hides_the_key_as_it_is_typed() {
+        use deeptui_core::Projection;
+        let mut app = App::new("no model yet");
+        app.ready = false;
+        banner(
+            &mut app.feed,
+            &Intro {
+                ready: false,
+                ..intro()
+            },
+        );
+        app.apply(&deeptui_core::Event::Ask(deeptui_core::Ask::Choose {
+            title: "Choose a provider".into(),
+            options: ["DeepSeek", "OpenAI"]
+                .iter()
+                .map(|n| deeptui_core::Choice {
+                    label: n.to_string(),
+                    detail: "needs a key".into(),
+                    command: format!("/model provider {n}"),
+                })
+                .collect(),
+            selected: 1,
+        }));
+        let s = draw(&mut app, 90, 30);
+        for want in [
+            "SETUP",
+            "Get started",
+            "Choose a provider",
+            "› OpenAI",
+            "no model yet",
+        ] {
+            assert!(s.contains(want), "{want}:\n{s}");
+        }
+
+        app.apply(&deeptui_core::Event::Ask(deeptui_core::Ask::Secret {
+            title: "Paste your DeepSeek API key".into(),
+            command: "/model key deepseek".into(),
+        }));
+        let s = draw(&mut app, 90, 30);
+        assert!(s.contains("◇  Paste your DeepSeek API key"), "{s}");
+        assert!(
+            s.contains("paste it here") && !s.contains("Choose a provider"),
+            "{s}"
+        );
+        app.editor.insert_str("sk-very-secret");
+        let s = draw(&mut app, 90, 30);
+        assert!(
+            !s.contains("sk-very-secret") && s.contains("••••••••••••••"),
+            "{s}"
+        );
     }
 }

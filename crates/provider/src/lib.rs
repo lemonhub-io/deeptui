@@ -170,6 +170,36 @@ impl Completion {
     }
 }
 
+/// What a provider made of a key.
+#[derive(Debug, PartialEq)]
+pub enum KeyCheck {
+    Accepted,
+    /// It said no: 401 or 403.
+    Refused(u16),
+    /// It could not say: unreachable, or no `/models` to ask.
+    Unknown(String),
+}
+
+/// Ask `base_url` whether it takes `key`, by listing its models — free,
+/// and nearly every OpenAI-compatible service answers it.
+pub async fn check_key(base_url: &str, key: &str) -> KeyCheck {
+    let http = match reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(h) => h,
+        Err(e) => return KeyCheck::Unknown(e.to_string()),
+    };
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    match http.get(url).bearer_auth(key).send().await {
+        Ok(r) if r.status().is_success() => KeyCheck::Accepted,
+        Ok(r) if matches!(r.status().as_u16(), 401 | 403) => KeyCheck::Refused(r.status().as_u16()),
+        Ok(r) => KeyCheck::Unknown(format!("HTTP {}", r.status())),
+        Err(e) => KeyCheck::Unknown(e.without_url().to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,10 +215,32 @@ mod tests {
         .unwrap()
     }
 
+    #[tokio::test]
+    async fn a_key_is_checked_by_listing_models() {
+        let stub = Stub::new();
+        stub.enqueue(200, r#"{"data":[]}"#);
+        stub.enqueue(401, r#"{"error":{"message":"bad key"}}"#);
+        stub.enqueue(404, "");
+        let url = stub.base_url();
+        assert_eq!(check_key(&url, "sk-good").await, KeyCheck::Accepted);
+        assert_eq!(check_key(&url, "sk-bad").await, KeyCheck::Refused(401));
+        assert_eq!(
+            check_key(&url, "sk-x").await,
+            KeyCheck::Unknown("HTTP 404 Not Found".into())
+        );
+        let req = &stub.requests()[0];
+        assert!(req.starts_with("GET /v1/models"), "{req}");
+        assert!(
+            req.to_lowercase().contains("authorization: bearer sk-good"),
+            "{req}"
+        );
+    }
+
     /// Compact rendering of one delta, for order-sensitive assertions.
     fn fmt(d: &Delta) -> String {
         match d {
             Delta::Text(t) => format!("text:{t}"),
+            Delta::Reasoning(r) => format!("think:{r}"),
             Delta::Call {
                 idx,
                 id,

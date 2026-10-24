@@ -1,8 +1,20 @@
 //! Keeping a history sendable and affordable: token estimates, invariant
 //! repair, and two-stage compaction.
+//!
+//! Compaction never forgets *that* something happened, only the bulk of it:
+//! an elided output keeps its gist (`exit 1`, `error: …`, `120 lines`), and a
+//! dropped stretch of history leaves a work log — one line per step, built
+//! from the messages themselves, at zero API cost. A model that can still see
+//! what it already did does not redo it, nor loop re-verifying it.
 
 use crate::msg::{Msg, Role};
-use std::collections::HashSet;
+use crate::text::one_line;
+use std::collections::{HashMap, HashSet};
+
+/// Opens the message that stands in for a dropped stretch of history.
+const LOG_HEAD: &str = "[context compacted:";
+/// Lines a work log keeps; the oldest beyond this are counted, not shown.
+const LOG_LINES: usize = 40;
 
 /// Cheap token estimate: ~4 chars/tok for ASCII, ~1 char/tok for non-ASCII.
 /// Deliberately avoids a tokenizer dependency: fast startup, zero cost.
@@ -19,9 +31,9 @@ pub fn est_tokens(s: &str) -> usize {
     a / 4 + n + 1
 }
 
-fn msg_tokens(m: &Msg) -> usize {
+pub fn msg_tokens(m: &Msg) -> usize {
     let mut t = 4;
-    if let Some(c) = &m.content {
+    for c in [&m.content, &m.reasoning_content].into_iter().flatten() {
         t += est_tokens(c);
     }
     if let Some(tcs) = &m.tool_calls {
@@ -108,7 +120,7 @@ pub fn compact(msgs: &mut Vec<Msg>, budget: usize) -> Option<String> {
             if let Some(c) = &m.content {
                 if c.len() > 240 && m.orig_len == 0 {
                     m.orig_len = c.len();
-                    m.content = Some(format!("[{} B output elided]", c.len()));
+                    m.content = Some(format!("[{} B output elided · {}]", c.len(), gist(c)));
                     elided += 1;
                 }
             }
@@ -128,7 +140,8 @@ pub fn compact(msgs: &mut Vec<Msg>, budget: usize) -> Option<String> {
     let dropped = n - head - tail;
     let mut keep: Vec<Msg> = msgs[..head].to_vec();
     keep.push(Msg::user(format!(
-        "[context compacted: {dropped} earlier messages removed to save tokens]"
+        "{LOG_HEAD} {dropped} earlier messages removed to save tokens. What they did:\n{}]",
+        work_log(&msgs[head..n - tail])
     )));
     keep.extend(msgs[n - tail..].to_vec());
 
@@ -138,6 +151,123 @@ pub fn compact(msgs: &mut Vec<Msg>, budget: usize) -> Option<String> {
     Some(format!(
         "compacted: elided {elided} outputs, dropped {dropped} msgs (+{orphans} orphans)"
     ))
+}
+
+/// The one line that best says how a tool call went: its error, its exit
+/// status, or the size of what came back.
+pub fn gist(out: &str) -> String {
+    let first = out.lines().next().unwrap_or("").trim();
+    let last = out
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    if first.starts_with("error") || first.starts_with("timeout") {
+        return one_line(first, 100);
+    }
+    if let Some(v) = last.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+        if v.starts_with("exit ") || v.starts_with("killed") {
+            return v.to_string();
+        }
+    }
+    match out.lines().count() {
+        0 => "(empty)".into(),
+        1 => one_line(first, 60),
+        n => format!("{n} lines"),
+    }
+}
+
+/// What a call was about: its path, command or pattern.
+fn subject(args: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(args).unwrap_or_default();
+    for (k, wrap) in [("path", ""), ("cmd", "`"), ("pattern", "/")] {
+        if let Some(s) = v[k].as_str() {
+            return format!("{wrap}{}{wrap}", one_line(s, 80));
+        }
+    }
+    one_line(args, 60)
+}
+
+/// One line per step of `dropped`, oldest first; an earlier log found there
+/// is carried forward, so the record survives repeated compaction.
+fn work_log(dropped: &[Msg]) -> String {
+    let results: HashMap<&str, &str> = dropped
+        .iter()
+        .filter(|m| m.role == Role::Tool)
+        .filter_map(|m| Some((m.tool_call_id.as_deref()?, m.content.as_deref()?)))
+        .collect();
+    let last_ask = dropped
+        .iter()
+        .rposition(|m| m.role == Role::User && !is_log(m));
+    let mut lines: Vec<String> = Vec::new();
+    for (i, m) in dropped.iter().enumerate() {
+        let text = m.content.as_deref().unwrap_or("").trim();
+        match m.role {
+            Role::User if is_log(m) => lines.extend(
+                text.strip_suffix(']')
+                    .unwrap_or(text)
+                    .lines()
+                    .skip(1)
+                    .map(str::to_string),
+            ),
+            // the latest instruction may be the task in hand: keep it whole
+            Role::User if Some(i) == last_ask => {
+                let t: String = text.chars().take(1500).collect();
+                lines.push(format!("user: {t}"));
+            }
+            Role::User => lines.push(format!("user: {}", one_line(text, 200))),
+            Role::Assistant => {
+                if !text.is_empty() {
+                    lines.push(format!("you: {}", one_line(text, 160)));
+                }
+                for tc in m.tool_calls.iter().flatten() {
+                    let r = results
+                        .get(tc.id.as_str())
+                        .map_or("no result".into(), |r| gist(r));
+                    lines.push(format!(
+                        "{} {} → {r}",
+                        tc.function.name,
+                        subject(&tc.function.arguments)
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    // a step repeated back to back is one line with a count
+    let mut runs: Vec<(String, usize)> = Vec::new();
+    for l in lines {
+        match runs.last_mut() {
+            Some((p, n)) if *p == l => *n += 1,
+            _ => runs.push((l, 1)),
+        }
+    }
+    let mut out: Vec<String> = runs
+        .into_iter()
+        .map(|(l, n)| if n > 1 { format!("{l} (×{n})") } else { l })
+        .collect();
+    if out.len() > LOG_LINES {
+        let cut = out.len() - LOG_LINES;
+        out.drain(..cut);
+        out.insert(0, format!("… {cut} earlier steps"));
+    }
+    out.join("\n")
+}
+
+fn is_log(m: &Msg) -> bool {
+    m.content
+        .as_deref()
+        .is_some_and(|c| c.starts_with(LOG_HEAD))
+}
+
+/// A user-role message the session wrote itself — a work log, a wrap-up
+/// order — rather than something the user typed.
+pub fn is_aside(m: &Msg) -> bool {
+    m.role == Role::User
+        && m.content
+            .as_deref()
+            .is_some_and(|c| c.starts_with(LOG_HEAD) || c.starts_with("[deeptui:"))
 }
 
 #[cfg(test)]
@@ -363,6 +493,116 @@ mod tests {
         // nothing was dropped and nothing was elided (all outputs are recent)
         assert_eq!(msgs.len(), 9);
         assert_eq!(total_tokens(&msgs), before);
+    }
+
+    #[test]
+    fn a_gist_is_the_line_that_says_how_it_went() {
+        assert_eq!(gist("error: boom\nmore"), "error: boom");
+        assert_eq!(
+            gist("timeout after 5ms (killed); output so far:\nx"),
+            "timeout after 5ms (killed); output so far:"
+        );
+        assert_eq!(gist("a\nb\n[exit 1]\n\n"), "exit 1");
+        assert_eq!(gist("x\n[killed by signal 9]"), "killed by signal 9");
+        assert_eq!(gist("applied 1 edits"), "applied 1 edits");
+        assert_eq!(gist("a\nb\nc"), "3 lines");
+        assert_eq!(gist(""), "(empty)");
+        // an elided output keeps its gist
+        let mut msgs = vec![Msg::system("s")];
+        for i in 0..10 {
+            msgs.push(Msg::assistant(None, vec![tc(&format!("c{i}"))]));
+            msgs.push(Msg::tool(
+                format!("c{i}"),
+                format!("{}\n[exit 2]", "x".repeat(300)),
+            ));
+        }
+        let budget = total_tokens(&msgs) - 1;
+        compact(&mut msgs, budget);
+        assert_eq!(
+            msgs[2].content.as_deref(),
+            Some("[309 B output elided · exit 2]")
+        );
+    }
+
+    #[test]
+    fn a_dropped_stretch_leaves_a_work_log() {
+        let call = |id: &str, name: &str, args: &str| {
+            Msg::assistant(None, vec![ToolCall::new(id, name, args)])
+        };
+        let mut msgs = vec![
+            Msg::system("s"),
+            Msg::user("first task"),
+            Msg::assistant(
+                Some("Looking around.".into()),
+                vec![ToolCall::new("r", "read_file", r#"{"path":"src/a.rs"}"#)],
+            ),
+            Msg::tool("r", "   1│fn a() {\n   2│}\n"),
+        ];
+        for i in 0..3 {
+            msgs.push(call(&format!("b{i}"), "bash", r#"{"cmd":"cargo test"}"#));
+            msgs.push(Msg::tool(
+                format!("b{i}"),
+                "running 1 test\nFAILED\n[exit 101]",
+            ));
+        }
+        msgs.push(Msg::user("now fix it"));
+        msgs.push(call("e", "edit_file", r#"{"path":"src/a.rs","edits":[]}"#));
+        msgs.push(Msg::tool(
+            "e",
+            "applied 1 edits to src/a.rs (+1/-1 lines) at L2",
+        ));
+        for i in 0..6 {
+            msgs.push(call(&format!("l{i}"), "ls", "{}"));
+            msgs.push(Msg::tool(format!("l{i}"), "a.txt"));
+        }
+        let note = compact(&mut msgs, 100).unwrap();
+        assert!(note.contains("dropped 11 msgs"), "{note}");
+        let log = msgs[2].content.clone().unwrap();
+        assert_eq!(
+            log,
+            "[context compacted: 11 earlier messages removed to save tokens. What they did:\n\
+             you: Looking around.\n\
+             read_file src/a.rs → 2 lines\n\
+             bash `cargo test` → exit 101 (×3)\n\
+             user: now fix it\n\
+             edit_file src/a.rs → applied 1 edits to src/a.rs (+1/-1 lines) at L2]"
+        );
+
+        // compacting again carries the old log forward into the new one
+        for i in 0..6 {
+            msgs.push(call(&format!("m{i}"), "bash", r#"{"cmd":"make"}"#));
+            msgs.push(Msg::tool(format!("m{i}"), "ok\n[exit 0]"));
+        }
+        compact(&mut msgs, 100).unwrap();
+        let log = msgs[2].content.clone().unwrap();
+        assert_eq!(log.matches(LOG_HEAD).count(), 1, "{log}");
+        assert!(
+            log.contains("\nbash `cargo test` → exit 101 (×3)\n"),
+            "{log}"
+        );
+        assert!(log.ends_with("\nls {} → a.txt (×6)]"), "{log}");
+    }
+
+    #[test]
+    fn a_long_work_log_keeps_its_newest_steps() {
+        let mut dropped = Vec::new();
+        for i in 0..50 {
+            dropped.push(Msg::assistant(
+                None,
+                vec![ToolCall::new(
+                    format!("c{i}"),
+                    "grep",
+                    format!(r#"{{"pattern":"p{i}"}}"#),
+                )],
+            ));
+            dropped.push(Msg::tool(format!("c{i}"), "error: no matches"));
+        }
+        let log = work_log(&dropped);
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), LOG_LINES + 1);
+        assert_eq!(lines[0], "… 10 earlier steps");
+        assert_eq!(lines[1], "grep /p10/ → error: no matches");
+        assert_eq!(lines[LOG_LINES], "grep /p49/ → error: no matches");
     }
 
     #[test]

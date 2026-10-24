@@ -1,9 +1,11 @@
 //! File tools: read, edit, write, list. Every output is capped, and every cap
 //! tells the model how to page past it.
 
+use crate::patch::{imbalance, line_of, locate, ungutter};
 use crate::{Args, Exec, Output, Tool, Workspace};
 use deeptui_core::Effect;
 use serde_json::json;
+use std::path::Path;
 
 const LINE_CAP: usize = 400; // max chars of a single source line returned
 const READ_MAX: usize = 2000; // hard cap on lines per read
@@ -65,6 +67,9 @@ pub const LS: Tool = Tool {
 
 fn read_file(ws: &Workspace, args: &Args) -> Output {
     let p = ws.resolve(args.str("path").unwrap_or(""))?;
+    if p.is_dir() {
+        return Err(format!("{}: is a directory (use ls)", ws.rel(&p)));
+    }
     // read at most READ_FILE_MAX + 1 bytes — the +1 detects truncation
     // without a stat call; a giant file can't OOM the agent
     let mut bytes = Vec::new();
@@ -127,7 +132,12 @@ fn read_file(ws: &Workspace, args: &Args) -> Output {
 
 fn edit_file(ws: &Workspace, args: &Args) -> Output {
     let p = ws.resolve(args.str("path").unwrap_or(""))?;
-    let mut text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", ws.rel(&p)))?;
+    let raw = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", ws.rel(&p)))?;
+    // a CRLF file is edited as LF — what the model sees and sends — and
+    // written back as CRLF
+    let crlf = raw.contains("\r\n") && raw.matches('\n').count() == raw.matches("\r\n").count();
+    let mut text = if crlf { raw.replace("\r\n", "\n") } else { raw };
+    let before_json = is_json(&p) && serde_json::from_str::<serde_json::Value>(&text).is_ok();
     let edits = args
         .get("edits")
         .as_array()
@@ -136,6 +146,9 @@ fn edit_file(ws: &Workspace, args: &Args) -> Output {
         return Err("no edits".into());
     }
     let (mut plus, mut minus) = (0usize, 0usize);
+    // where each edit landed, kept current as later edits shift lines
+    let mut at: Vec<usize> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
     for (i, e) in edits.iter().enumerate() {
         let old = e["old"]
             .as_str()
@@ -146,25 +159,58 @@ fn edit_file(ws: &Workspace, args: &Args) -> Output {
         if old.is_empty() {
             return Err(format!("edit {i}: empty old"));
         }
-        let count = text.matches(old).count();
-        if count == 0 {
-            return Err(format!("edit {i}: `old` not found in {}", ws.rel(&p)));
+        let hit = locate(&text, old, new)
+            .or_else(|miss| match ungutter(old) {
+                // copied from read_file output, line numbers and all
+                Some(o) => {
+                    let n = ungutter(new).unwrap_or_else(|| new.to_string());
+                    locate(&text, &o, &n)
+                }
+                None => Err(miss),
+            })
+            .map_err(|e| format!("edit {i}: {e}"))?;
+        let gone = &text[hit.range.clone()];
+        minus += gone.lines().count();
+        plus += hit.with.lines().count();
+        if !is_prose(&p) {
+            for (c, d) in imbalance(gone, &hit.with) {
+                notes.push(format!(
+                    "warning: edit {i} leaves `{c}` unbalanced by {d:+}"
+                ));
+            }
         }
-        if count > 1 {
-            return Err(format!(
-                "edit {i}: `old` matches {count} times — add more context"
-            ));
+        if hit.loose {
+            notes.push(format!("note: edit {i} matched ignoring whitespace"));
         }
-        minus += old.lines().count();
-        plus += new.lines().count();
-        text = text.replacen(old, new, 1);
+        let line = line_of(&text, hit.range.start);
+        let shift = hit.with.matches('\n').count() as i64 - gone.matches('\n').count() as i64;
+        for l in at.iter_mut().filter(|l| **l > line) {
+            *l = (*l as i64 + shift) as usize;
+        }
+        at.push(line);
+        text.replace_range(hit.range, &hit.with);
+    }
+    if before_json {
+        if let Err(e) = serde_json::from_str::<serde_json::Value>(&text) {
+            notes.push(format!("warning: no longer valid JSON: {e}"));
+        }
+    }
+    if crlf {
+        text = text.replace('\n', "\r\n");
     }
     std::fs::write(&p, &text).map_err(|e| format!("{}: {e}", ws.rel(&p)))?;
-    Ok(format!(
-        "applied {} edits to {} (+{plus}/-{minus} lines)",
+    let at: Vec<String> = at.iter().map(|l| format!("L{l}")).collect();
+    let mut out = format!(
+        "applied {} edits to {} (+{plus}/-{minus} lines) at {}",
         edits.len(),
-        ws.rel(&p)
-    ))
+        ws.rel(&p),
+        at.join(", ")
+    );
+    for n in notes {
+        out.push('\n');
+        out.push_str(&n);
+    }
+    Ok(out)
 }
 
 fn write_file(ws: &Workspace, args: &Args) -> Output {
@@ -173,8 +219,34 @@ fn write_file(ws: &Workspace, args: &Args) -> Output {
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
+    // a JSON file that parsed before must still parse (JSONC never did)
+    let was_json = is_json(&p)
+        && std::fs::read_to_string(&p)
+            .is_ok_and(|t| serde_json::from_str::<serde_json::Value>(&t).is_ok());
     std::fs::write(&p, content).map_err(|e| format!("{}: {e}", ws.rel(&p)))?;
-    Ok(format!("wrote {} ({} B)", ws.rel(&p), content.len()))
+    let mut out = format!("wrote {} ({} B)", ws.rel(&p), content.len());
+    if was_json {
+        if let Err(e) = serde_json::from_str::<serde_json::Value>(content) {
+            out.push_str(&format!("\nwarning: no longer valid JSON: {e}"));
+        }
+    }
+    Ok(out)
+}
+
+fn ext(p: &Path) -> &str {
+    p.extension().and_then(|e| e.to_str()).unwrap_or("")
+}
+
+fn is_json(p: &Path) -> bool {
+    ext(p).eq_ignore_ascii_case("json")
+}
+
+/// Text where a lone bracket is ordinary punctuation, not a syntax slip.
+fn is_prose(p: &Path) -> bool {
+    matches!(
+        ext(p).to_ascii_lowercase().as_str(),
+        "md" | "markdown" | "txt" | "rst" | "adoc" | "org" | "csv" | "tsv" | "log" | ""
+    )
 }
 
 fn ls(ws: &Workspace, args: &Args) -> Output {
@@ -340,7 +412,7 @@ mod tests {
             &a(json!({"path": "f.txt", "edits": [{"old": "hello world", "new": "hello there"}]})),
         )
         .unwrap();
-        assert_eq!(msg, "applied 1 edits to f.txt (+1/-1 lines)");
+        assert_eq!(msg, "applied 1 edits to f.txt (+1/-1 lines) at L1");
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
             "hello there\nsecond line\n"
@@ -352,7 +424,7 @@ mod tests {
             &a(json!({"path": "f.txt", "edits": [{"old": "hello there\nsecond", "new": "hi"}]})),
         )
         .unwrap();
-        assert!(msg.ends_with("(+1/-2 lines)"), "{msg}");
+        assert!(msg.ends_with("(+1/-2 lines) at L1"), "{msg}");
     }
 
     #[test]
@@ -408,7 +480,7 @@ mod tests {
                 {"old": "three", "new": "3\n4"}]})),
         )
         .unwrap();
-        assert_eq!(msg, "applied 2 edits to f.txt (+3/-2 lines)");
+        assert_eq!(msg, "applied 2 edits to f.txt (+3/-2 lines) at L1, L3");
         assert_eq!(
             std::fs::read_to_string(t.join("f.txt")).unwrap(),
             "1\ntwo\n3\n4\n"
@@ -426,6 +498,108 @@ mod tests {
         let err =
             edit_file(&ws, &a(json!({"path": "f.txt", "edits": [{"new": "b"}]}))).unwrap_err();
         assert_eq!(err, "edit 0: missing old");
+    }
+
+    #[test]
+    fn edit_file_forgives_what_models_get_wrong() {
+        let t = TmpDir::new("edit-forgive");
+        let ws = ws(&t);
+        // CRLF stays CRLF, though the model searched with LF
+        let p = t.write("w.rs", "fn a() {\r\n    x();\r\n}\r\n");
+        let msg = edit_file(
+            &ws,
+            &a(json!({"path": "w.rs", "edits": [{"old": "    x();\n}", "new": "    y();\n}"}]})),
+        )
+        .unwrap();
+        assert_eq!(msg, "applied 1 edits to w.rs (+2/-2 lines) at L2");
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "fn a() {\r\n    y();\r\n}\r\n"
+        );
+
+        // read_file's gutter copied into old and new
+        let p = t.write("g.py", "def f():\n    return 1\n");
+        let msg = edit_file(
+            &ws,
+            &a(json!({"path": "g.py", "edits": [
+                {"old": "   2│    return 1", "new": "   2│    return 2"}]})),
+        )
+        .unwrap();
+        assert!(msg.starts_with("applied 1 edits to g.py"), "{msg}");
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "def f():\n    return 2\n"
+        );
+
+        // an indentation slip lands, re-indented, and says so
+        let msg = edit_file(
+            &ws,
+            &a(json!({"path": "g.py", "edits": [
+                {"old": " def f():\n     return 2", "new": " def f():\n     return 3"}]})),
+        )
+        .unwrap();
+        assert!(
+            msg.ends_with("\nnote: edit 0 matched ignoring whitespace"),
+            "{msg}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "def f():\n    return 3\n"
+        );
+
+        // a miss shows the region it most likely meant
+        let err = edit_file(
+            &ws,
+            &a(json!({"path": "g.py", "edits": [{"old": "    retrun 3", "new": "x"}]})),
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with("edit 0: `old` not found; closest is lines 2-2"),
+            "{err}"
+        );
+        assert!(err.ends_with("   2│    return 3"), "{err}");
+    }
+
+    #[test]
+    fn edits_and_writes_flag_likely_breakage() {
+        let t = TmpDir::new("edit-warn");
+        let ws = ws(&t);
+        t.write("m.rs", "fn a() {\n}\n");
+        let msg = edit_file(
+            &ws,
+            &a(json!({"path": "m.rs", "edits": [{"old": "fn a() {\n}", "new": "fn a() {"}]})),
+        )
+        .unwrap();
+        assert!(
+            msg.ends_with("\nwarning: edit 0 leaves `{` unbalanced by +1"),
+            "{msg}"
+        );
+        // prose has no bracket discipline to keep
+        t.write("n.md", "a\n");
+        let msg = edit_file(
+            &ws,
+            &a(json!({"path": "n.md", "edits": [{"old": "a", "new": "1) a"}]})),
+        )
+        .unwrap();
+        assert!(!msg.contains("warning"), "{msg}");
+
+        t.write("c.json", "{\"a\": 1}");
+        let msg = edit_file(
+            &ws,
+            &a(json!({"path": "c.json", "edits": [{"old": "1}", "new": "1,}"}]})),
+        )
+        .unwrap();
+        assert!(msg.contains("warning: no longer valid JSON"), "{msg}");
+        let msg = write_file(&ws, &a(json!({"path": "c.json", "content": "{}"}))).unwrap();
+        assert_eq!(msg, "wrote c.json (2 B)", "it was already broken");
+        let msg = write_file(&ws, &a(json!({"path": "c.json", "content": "{"}))).unwrap();
+        assert!(msg.contains("warning: no longer valid JSON"), "{msg}");
+        // a directory is not a file to read
+        std::fs::create_dir_all(t.join("d")).unwrap();
+        assert_eq!(
+            read_file(&ws, &a(json!({"path": "d"}))).unwrap_err(),
+            "d: is a directory (use ls)"
+        );
     }
 
     #[test]

@@ -4,7 +4,8 @@
 //!
 //! - [`app`] composes the parts and applies events and keys;
 //! - [`feed`] is the scrollback, [`editor`] the input line, [`meter`] the gauges;
-//! - [`keymap`] maps keys to intents, [`draw`] renders a frame;
+//! - [`keymap`] maps keys to intents, [`slash`] names the slash commands,
+//!   [`draw`] renders a frame;
 //! - [`md`] and [`styled`] turn assistant markdown into wrapped styled lines.
 
 mod app;
@@ -14,6 +15,8 @@ mod feed;
 mod keymap;
 mod md;
 mod meter;
+mod picker;
+mod slash;
 mod styled;
 mod theme;
 
@@ -33,7 +36,7 @@ use deeptui_engine::Remote;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::future::Future;
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -50,6 +53,9 @@ pub struct Intro {
     pub priced: bool,
     /// A newer release already known from the cached check.
     pub update: Option<String>,
+    /// The model has a key. Without one, the session opens with a
+    /// provider picker and prompts wait.
+    pub ready: bool,
 }
 
 /// Run the UI until the user quits. `late_update` resolves to a newer
@@ -99,6 +105,10 @@ async fn run_ui(
     app.motion = std::env::var_os("DEEPTUI_REDUCED_MOTION")
         .is_none_or(|value| value.is_empty() || value == "0");
     app.update = intro.update.clone();
+    app.ready = intro.ready;
+    if !intro.ready {
+        app.model = "no model yet".into();
+    }
     draw::banner(&mut app.feed, &intro);
 
     let mut late_update = std::pin::pin!(late_update);
@@ -145,9 +155,60 @@ async fn run_ui(
                 }
             }
         }
+        if let Some(text) = app.clipboard.take() {
+            let out = term.backend_mut();
+            let _ = out
+                .write_all(osc52(&text).as_bytes())
+                .and_then(|_| out.flush());
+        }
         term.draw(|f| draw::render(f, &mut app))?;
         if app.quit {
             return Ok(());
         }
+    }
+}
+
+/// Ask the terminal to put `text` on the system clipboard — the one way to
+/// reach it that also works over ssh. Terminals that refuse ignore it.
+fn osc52(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", base64(text.as_bytes()))
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() {
+                ABC[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_clipboard_sequence_carries_standard_base64() {
+        for (plain, coded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foobar", "Zm9vYmFy"),
+            ("✓", "4pyT"),
+        ] {
+            assert_eq!(base64(plain.as_bytes()), coded, "{plain}");
+        }
+        assert_eq!(osc52("hi"), "\x1b]52;c;aGk=\x07");
     }
 }

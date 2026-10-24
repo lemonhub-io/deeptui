@@ -4,6 +4,7 @@
 //! console, the stats journal, a session's ledger — is a [`Projection`] of it.
 //! No view keeps facts of its own that the stream does not carry.
 
+use crate::msg::Msg;
 use std::ops::AddAssign;
 
 /// Tokens one completion consumed, priced where they were measured.
@@ -75,6 +76,44 @@ pub enum Event {
     Usage(Usage),
     /// The last event of every turn.
     Finished(Receipt),
+    /// The session itself speaking — a reply to a command, not the model.
+    Notice(String),
+    /// The conversation was swapped (cleared, rewound, resumed): this is all
+    /// it holds now, system prompt aside.
+    Reset(Vec<Msg>),
+    /// The session needs the user's answer — a frontend that can ask, asks.
+    Ask(Ask),
+    /// Later turns go to another model.
+    Model {
+        name: String,
+        /// Its context budget: history past it is compacted.
+        budget: usize,
+        /// False when its price is unknown and the meter would read $0.
+        priced: bool,
+    },
+}
+
+/// A question the session puts to the user. Answers are command lines, so a
+/// frontend runs them like anything typed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Ask {
+    /// Pick one of `options`, starting at `selected`.
+    Choose {
+        title: String,
+        options: Vec<Choice>,
+        selected: usize,
+    },
+    /// Type a secret, masked and never echoed or kept, then run
+    /// `command <secret>`.
+    Secret { title: String, command: String },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    pub label: String,
+    pub detail: String,
+    /// What picking it runs.
+    pub command: String,
 }
 
 /// A view built by folding the event stream.

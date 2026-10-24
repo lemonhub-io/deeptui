@@ -6,12 +6,14 @@
 
 mod headless;
 mod journal;
+mod models;
 mod settings;
+mod transcript;
 
 use anyhow::{bail, Result};
 use clap::Parser;
 use deeptui_core::{Event, Msg};
-use deeptui_engine::{system_prompt, Engine, Remote, Session};
+use deeptui_engine::{system_prompt, Command, Engine, Remote, Session};
 use deeptui_provider::Provider;
 use deeptui_tools::{Toolbox, Workspace};
 use journal::Journal;
@@ -19,6 +21,7 @@ use settings::{Flags, Settings};
 use std::io::{IsTerminal, Read};
 use std::path::Path;
 use tokio::sync::mpsc;
+use transcript::Transcript;
 
 /// DeepTUI — a lean coding agent: extreme cost & speed optimization.
 #[derive(Parser)]
@@ -27,7 +30,7 @@ struct Cli {
     /// Prompt. If given (or stdin is piped), runs headless and exits.
     #[arg(trailing_var_arg = true)]
     prompt: Vec<String>,
-    /// Model name.
+    /// Model name, or one added with /model (e.g. deepseek/deepseek-v4-pro).
     #[arg(short, long)]
     model: Option<String>,
     /// OpenAI-compatible base URL (e.g. https://api.deepseek.com/v1).
@@ -66,6 +69,15 @@ struct Cli {
     /// Don't check for a newer release on startup.
     #[arg(long)]
     no_update_check: bool,
+    /// Continue this directory's last conversation.
+    #[arg(short = 'c', long = "continue")]
+    resume: bool,
+    /// Model rounds per task; the last one must report status (0 = no cap, default 60).
+    #[arg(long, value_name = "N")]
+    max_rounds: Option<usize>,
+    /// Dollars a task may spend before it is stopped (0 = no cap).
+    #[arg(long, value_name = "USD")]
+    max_cost: Option<f64>,
 }
 
 impl Cli {
@@ -78,6 +90,8 @@ impl Cli {
             no_map: self.no_map,
             map_bytes: self.map_bytes,
             no_update_check: self.no_update_check,
+            max_rounds: self.max_rounds,
+            max_cost: self.max_cost,
         }
     }
 
@@ -127,11 +141,19 @@ async fn main() -> Result<()> {
     deeptui_update::cleanup_stale();
     let s = Settings::load(&cli.flags())?;
     let prompt = cli.prompt();
-    let journal = Journal::open(&s.endpoint.model);
+    let headless = cli.print || !prompt.is_empty();
+    if headless && !s.ready() {
+        bail!(
+            "no API key for {}: set DEEPTUI_API_KEY (or the provider's own variable) \
+             or pass --api-key — or run `deeptui` once to choose a provider and paste its key",
+            s.model.id
+        );
+    }
+    let journal = Journal::open(&s.model.endpoint.model);
     let lifetime = journal.load();
-    let (remote, events) = session(&s, &root, journal)?;
+    let (remote, events) = session(&s, &root, journal, cli.resume)?;
 
-    if cli.print || !prompt.is_empty() {
+    if headless {
         if prompt.is_empty() {
             bail!("empty prompt");
         }
@@ -150,21 +172,49 @@ async fn main() -> Result<()> {
         std::process::exit(code);
     }
     let intro = deeptui_tui::Intro {
-        model: s.endpoint.model.clone(),
+        model: s.model.endpoint.model.clone(),
         root,
-        context_budget: s.context_budget,
+        context_budget: s.model.context_budget,
         lifetime,
-        priced: s.tariff.is_known(),
+        priced: s.model.tariff.is_known(),
         update: s.update_check.then(deeptui_update::cached_update).flatten(),
+        ready: s.ready(),
     };
+    // no key yet: ask for the remembered model's, else open the provider picker
+    if !s.ready() {
+        let first = if s.model.id == s.configured.id {
+            "setup".to_string()
+        } else {
+            s.model.id.clone()
+        };
+        remote.send(Command::Model(first));
+    }
     deeptui_tui::run(remote, events, intro, deeptui_update::check(s.update_check)).await
 }
 
-/// Assemble the engine from its parts and start a session around it.
-fn session(s: &Settings, root: &Path, journal: Journal) -> Result<(Remote, mpsc::Receiver<Event>)> {
-    let provider = Provider::new(s.endpoint.clone())?;
+/// Assemble the engine from its parts and start a session around it —
+/// fresh, or picking up where this directory's last conversation stopped.
+fn session(
+    s: &Settings,
+    root: &Path,
+    journal: Journal,
+    resume: bool,
+) -> Result<(Remote, mpsc::Receiver<Event>)> {
+    let m = &s.model;
+    let provider = Provider::new(m.endpoint.clone())?;
     let toolbox = Toolbox::new(Workspace::new(root, s.bash_timeout_ms));
-    let engine = Engine::new(provider, toolbox, s.tariff, s.context_budget);
+    let engine = Engine::new(provider, toolbox, m.tariff, m.context_budget).limits(s.limits);
     let history = vec![Msg::system(system_prompt(root, s.map))];
-    Ok(Session::new(engine, history).tap(journal).spawn())
+    let mut session = Session::new(engine, history)
+        .tap(journal)
+        .switchboard(models::Board::new(s));
+    if s.save_session {
+        session = session.shelf(Transcript::for_root(root));
+    }
+    let (remote, events) = session.spawn();
+    // ahead of any prompt, so the turn starts from the old conversation
+    if resume {
+        remote.send(Command::Resume(Some(1)));
+    }
+    Ok((remote, events))
 }

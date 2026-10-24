@@ -1,24 +1,29 @@
-# Required migration to DeepTUI v0.1.0-beta
+# Required migration to DeepTUI v0.1.1-beta
 
-DeepTUI **v0.1.0-beta is the only supported release**. The previous ragent
+DeepTUI **v0.1.1-beta is the only supported release**. The previous ragent
 releases v0.1.0 through v0.6.0, their download assets, and their tags have been
 removed. Their larger version numbers belong to the retired release sequence.
+
+Users of DeepTUI **v0.1.0-beta** must also rerun the installer below. That
+release's updater is pinned to v0.1.0-beta and cannot select v0.1.1-beta.
+Existing DeepTUI configuration, API keys, model choices, and usage history are
+preserved during installation.
 
 ## Existing Linux and macOS installations
 
 Run the required-version installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/lemonhub-io/deeptui/v0.1.0-beta/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lemonhub-io/deeptui/v0.1.1-beta/install.sh | bash
 ```
 
 Use the same installation directory as before. For a custom directory:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/lemonhub-io/deeptui/v0.1.0-beta/install.sh | bash -s -- --bin-dir /your/bin
+curl -fsSL https://raw.githubusercontent.com/lemonhub-io/deeptui/v0.1.1-beta/install.sh | bash -s -- --bin-dir /your/bin
 ```
 
-The installer verifies the download checksum and exact `0.1.0-beta` binary
+The installer verifies the download checksum and exact `0.1.1-beta` binary
 version before replacing a working installation. It then:
 
 - Keeps existing `deeptui/config.toml` and `deeptui/stats.tsv` files.
@@ -32,8 +37,8 @@ version before replacing a working installation. It then:
 Verify the result:
 
 ```sh
-deeptui --version       # deeptui 0.1.0-beta
-ragent --version        # deeptui 0.1.0-beta, if the old binary was migrated
+deeptui --version       # deeptui 0.1.1-beta
+ragent --version        # deeptui 0.1.1-beta, if the old binary was migrated
 ```
 
 On Linux, configuration and data follow `XDG_CONFIG_HOME` and `XDG_DATA_HOME`
@@ -49,8 +54,8 @@ This requires Rust and builds the beta from its source tag.
 
 ## Windows
 
-Download the `deeptui-v0.1.0-beta-x86_64-pc-windows-msvc.zip` asset from the
-[v0.1.0-beta release](https://github.com/lemonhub-io/deeptui/releases/tag/v0.1.0-beta).
+Download the `deeptui-v0.1.1-beta-x86_64-pc-windows-msvc.zip` asset from the
+[v0.1.1-beta release](https://github.com/lemonhub-io/deeptui/releases/tag/v0.1.1-beta).
 Verify the archive against `SHA256SUMS.txt`, extract it, and put `deeptui.exe` on
 PATH. Remove the retired `ragent.exe` from PATH. Copy the existing ragent config
 and data into the corresponding deeptui directories if no DeepTUI files exist.
@@ -65,7 +70,7 @@ binaries or erase copies already on someone else's machine.
 Device administrators can require the upgrade through their existing software
 deployment system: deploy the beta, replace or remove retired binaries, and
 verify `deeptui --version`. The legacy updater cannot perform the version reset:
-it considers `0.1.0-beta` older than the retired stable versions, so users must
+it considers `0.1.1-beta` older than the retired stable versions, so users must
 run the new installer instead of `ragent --self-update`.
 
 The new installer and updater reject unsupported target versions. This is an

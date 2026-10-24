@@ -6,7 +6,7 @@ use deeptui_core::text::fmt_tokens;
 use deeptui_core::{Event, Ledger, Outcome, Projection, Receipt};
 use deeptui_engine::Remote;
 use std::io::Write;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// Events rendered as terminal lines.
@@ -39,7 +39,12 @@ impl<O: Write, E: Write> Projection for Console<O, E> {
                 Outcome::Interrupted => writeln!(e, "\x1b[2m— interrupted\x1b[0m"),
                 Outcome::Failed(why) => writeln!(e, "\x1b[31m✗ {why}\x1b[0m"),
             },
-            Event::Round(_) | Event::Usage(_) => Ok(()),
+            Event::Notice(n) => writeln!(e, "\x1b[2m{n}\x1b[0m"),
+            Event::Round(_)
+            | Event::Usage(_)
+            | Event::Reset(_)
+            | Event::Model { .. }
+            | Event::Ask(_) => Ok(()),
         };
     }
 }
@@ -73,7 +78,7 @@ pub async fn run(
     let t0 = Instant::now();
     remote.ask(prompt);
     let r = remote.clone();
-    tokio::spawn(async move {
+    let sig = tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
         r.cancel();
     });
@@ -98,6 +103,14 @@ pub async fn run(
     println!();
     life.record(&receipt);
     eprintln!("{}", summary(&receipt, t0.elapsed().as_secs_f32(), &life));
+    // Let the session finish its bookkeeping (the saved transcript) before
+    // the process exits: with every handle gone, it closes the stream.
+    sig.abort();
+    drop(remote);
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        while events.recv().await.is_some() {}
+    })
+    .await;
     i32::from(matches!(receipt.outcome, Outcome::Failed(_)))
 }
 

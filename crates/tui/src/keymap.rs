@@ -10,6 +10,8 @@ pub(crate) enum Action {
     /// Interrupt the run, or drop the draft when idle.
     Escape,
     Submit,
+    /// Complete a half-typed slash command.
+    Complete,
     Newline,
     Scroll(isize),
     Edit(Edit),
@@ -39,6 +41,7 @@ pub(crate) fn action(k: &KeyEvent, line_empty: bool) -> Option<Action> {
         KeyCode::Esc => Action::Escape,
         KeyCode::Enter if newline => Action::Newline,
         KeyCode::Enter => Action::Submit,
+        KeyCode::Tab => Action::Complete,
         KeyCode::Backspace => Action::Edit(Edit::Backspace),
         KeyCode::Delete => Action::Edit(Edit::Delete),
         KeyCode::Left if ctrl => Action::Edit(Edit::WordLeft),
@@ -84,6 +87,7 @@ mod tests {
             Some(Action::Edit(Edit::WordLeft))
         );
         assert_eq!(k(KeyCode::PageUp, M::NONE), Some(Action::Scroll(-10)));
+        assert_eq!(k(KeyCode::Tab, M::NONE), Some(Action::Complete));
     }
 
     #[test]
@@ -98,12 +102,7 @@ mod tests {
         use KeyModifiers as M;
         // ctrl+char never types literal text
         assert_eq!(k(KeyCode::Char('b'), M::CONTROL), None);
-        for code in [
-            KeyCode::Tab,
-            KeyCode::BackTab,
-            KeyCode::Insert,
-            KeyCode::F(12),
-        ] {
+        for code in [KeyCode::BackTab, KeyCode::Insert, KeyCode::F(12)] {
             assert_eq!(k(code, M::NONE), None, "{code:?}");
         }
         let mut rel = KeyEvent::new(KeyCode::Char('x'), M::NONE);

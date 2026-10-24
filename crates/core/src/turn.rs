@@ -13,17 +13,41 @@
 //!                              │
 //!                              └──── settle() ──▶ Over ── poll() ──▶ Finished
 //! ```
+//!
+//! A turn is also bounded ([`Limits`]): a model that will not stop is wound
+//! down — its last allowed round asks for a status report instead of more
+//! work — and one that keeps running the same call to the same result is told
+//! so in that result. Runaway loops are where agents burn money.
 
 use crate::event::{Event, Outcome, Receipt, Usage};
 use crate::history;
 use crate::msg::{Msg, ToolCall};
 use crate::text::one_line;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::hash::{DefaultHasher, Hash, Hasher};
+
+/// Bounds on one turn; zero means unbounded.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Limits {
+    /// Model rounds per turn. The last one runs without tools.
+    pub max_rounds: usize,
+    /// Dollars per turn; checked before each request.
+    pub max_cost: f64,
+}
+
+/// Told to the model when its last allowed round opens.
+pub const WRAP_UP: &str = "[deeptui: round limit reached — tool calls will not run any more. \
+Reply now with what is done and what remains.]";
+
+/// A call that returned the same result this many times draws a note.
+const REPEATS: usize = 3;
 
 /// One decoded piece of a streamed completion, provider-neutral.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Delta {
     Text(String),
+    /// Thinking that comes before the reply: kept for the turn, not shown.
+    Reasoning(String),
     /// A fragment of tool call `idx`: id and name arrive once, args in pieces.
     Call {
         idx: usize,
@@ -65,6 +89,7 @@ pub type ToolOutput = Result<String, String>;
 #[derive(Default)]
 struct Reply {
     text: String,
+    reasoning: String,
     calls: BTreeMap<usize, (String, String, String)>,
     finish: String,
     error: Option<String>,
@@ -114,6 +139,9 @@ enum State {
 pub struct Turn<'h> {
     history: &'h mut Vec<Msg>,
     budget: usize,
+    limits: Limits,
+    /// How often each (call, result) pair was seen this turn, by hash.
+    seen: HashMap<u64, usize>,
     round: usize,
     state: State,
     reply: Reply,
@@ -129,12 +157,19 @@ impl<'h> Turn<'h> {
         Turn {
             history,
             budget,
+            limits: Limits::default(),
+            seen: HashMap::new(),
             round: 0,
             state: State::Ready,
             reply: Reply::default(),
             usage: Usage::default(),
             outbox: VecDeque::new(),
         }
+    }
+
+    pub fn bounded(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// The messages the next request must carry.
@@ -157,14 +192,29 @@ impl<'h> Turn<'h> {
     }
 
     fn open_round(&mut self) -> Next {
+        let cap = self.limits.max_cost;
+        if cap > 0.0 && self.usage.cost >= cap {
+            self.finish(Outcome::Failed(format!(
+                "spend cap ${cap:.2} reached after {} rounds",
+                self.round
+            )));
+            return self.poll();
+        }
         self.round += 1;
         self.outbox.push_back(Event::Round(self.round));
         history::repair(self.history);
         if let Some(note) = history::compact(self.history, self.budget) {
             self.outbox.push_back(Event::Compacted(note));
         }
+        if self.last_round() && self.round > 1 {
+            self.history.push(Msg::user(WRAP_UP));
+        }
         self.state = State::Asking;
         Next::Ask
+    }
+
+    fn last_round(&self) -> bool {
+        self.limits.max_rounds > 0 && self.round >= self.limits.max_rounds
     }
 
     pub fn absorb(&mut self, d: Delta) {
@@ -176,6 +226,7 @@ impl<'h> Turn<'h> {
                 self.reply.text.push_str(&t);
                 self.outbox.push_back(Event::Text(t));
             }
+            Delta::Reasoning(r) => self.reply.reasoning.push_str(&r),
             Delta::Call {
                 idx,
                 id,
@@ -214,8 +265,12 @@ impl<'h> Turn<'h> {
             StreamEnd::Complete => false,
         };
         // On cancel, partial tool calls are untrusted — truncated args, never
-        // executed — so only the text survives.
-        let calls = if interrupted {
+        // executed — so only the text survives. Calls made in the last
+        // allowed round are dropped the same way: they will never run.
+        let capped = self.last_round();
+        // forced: told to wrap up, or wanting tools it may not have
+        let forced = capped && (self.round > 1 || !reply.calls.is_empty());
+        let calls = if interrupted || capped {
             Vec::new()
         } else {
             reply.take_calls(self.round)
@@ -224,10 +279,18 @@ impl<'h> Turn<'h> {
         // Never persist an assistant message with neither content nor
         // tool_calls: the next request would be rejected.
         if content.is_some() || !calls.is_empty() {
-            self.history.push(Msg::assistant(content, calls.clone()));
+            let mut m = Msg::assistant(content, calls.clone());
+            m.reasoning_content = (!reply.reasoning.is_empty()).then_some(reply.reasoning);
+            self.history.push(m);
         }
         if interrupted {
             return self.finish(Outcome::Interrupted);
+        }
+        if forced {
+            return self.finish(Outcome::Failed(format!(
+                "stopped at the {}-round limit",
+                self.round
+            )));
         }
         if calls.is_empty() {
             return self.finish(if reply.finish == "length" {
@@ -284,12 +347,33 @@ impl<'h> Turn<'h> {
         }
         if let State::Running(b) = std::mem::replace(&mut self.state, State::Ready) {
             for (c, d) in b.calls.into_iter().zip(b.done.into_iter().flatten()) {
-                self.history.push(Msg::tool(c.id, d.content));
+                let mut content = d.content;
+                let n = self.see(&c, &content);
+                if n >= REPEATS {
+                    content.push_str(&format!(
+                        "\n[deeptui: same call, same result, {n}× this turn — try a different approach]"
+                    ));
+                }
+                self.history.push(Msg::tool(c.id, content));
             }
         }
     }
 
+    /// Count one more sighting of `call` producing `out`.
+    fn see(&mut self, call: &ToolCall, out: &str) -> usize {
+        let mut h = DefaultHasher::new();
+        (&call.function.name, &call.function.arguments, out).hash(&mut h);
+        let n = self.seen.entry(h.finish()).or_default();
+        *n += 1;
+        *n
+    }
+
     fn finish(&mut self, outcome: Outcome) {
+        // thinking is needed only within its turn: later requests, the
+        // saved transcript and undo snapshots stay lean without it
+        for m in self.history.iter_mut() {
+            m.reasoning_content = None;
+        }
         let r = Receipt {
             outcome,
             usage: self.usage,
@@ -346,6 +430,10 @@ mod tests {
             Event::Compacted(n) => format!("compacted:{n}"),
             Event::Usage(u) => format!("usage:{}:{}", u.input, u.output),
             Event::Finished(r) => format!("finished:{:?}", r.outcome),
+            Event::Notice(n) => format!("notice:{n}"),
+            Event::Reset(h) => format!("reset:{}", h.len()),
+            Event::Model { name, .. } => format!("model:{name}"),
+            Event::Ask(_) => "ask".into(),
         }
     }
 
@@ -395,6 +483,42 @@ mod tests {
         );
         assert_eq!(h.len(), 3);
         assert_eq!(h[2].content.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn thinking_rides_along_within_its_turn_and_is_dropped_after() {
+        let mut h = vec![Msg::system("sys")];
+        let mut t = Turn::begin(&mut h, "go", 60_000);
+        reply(
+            &mut t,
+            vec![
+                Delta::Reasoning("need to ".into()),
+                Delta::Reasoning("look".into()),
+                call(0, Some("c1"), Some("ls"), "{}"),
+            ],
+            StreamEnd::Complete,
+        );
+        assert!(matches!(t.poll(), Next::Run(_)));
+        t.resolve(0, Ok("a.txt".into()), 1);
+        // the next request carries it back with the call it led to
+        assert_eq!(t.poll(), Next::Ask);
+        let m = &t.history()[2];
+        assert_eq!(m.reasoning_content.as_deref(), Some("need to look"));
+        assert!(m.tool_calls.is_some());
+        let wire = serde_json::to_string(m).unwrap();
+        assert!(
+            wire.contains(r#""reasoning_content":"need to look""#),
+            "{wire}"
+        );
+        t.absorb(Delta::Reasoning("easy".into()));
+        t.absorb(text("done"));
+        t.settle(StreamEnd::Complete);
+        assert!(matches!(t.poll(), Next::Finished(_)));
+        // never shown, and gone once the turn is over
+        assert!(!drain(&mut t).iter().any(|e| e.contains("look")));
+        assert!(h.iter().all(|m| m.reasoning_content.is_none()));
+        let wire = serde_json::to_string(&h).unwrap();
+        assert!(!wire.contains("reasoning_content"), "{wire}");
     }
 
     #[test]
@@ -574,6 +698,130 @@ mod tests {
         // polling again while asking is idempotent: no second round opens
         assert_eq!(t.poll(), Next::Ask);
         assert!(drain(&mut t).is_empty());
+    }
+
+    /// Answer every call of the pending batch with `out`.
+    fn answer(t: &mut Turn, out: &str) {
+        let Next::Run(calls) = t.poll() else {
+            panic!("expected a batch")
+        };
+        for i in 0..calls.len() {
+            t.resolve(i, Ok(out.into()), 0);
+        }
+    }
+
+    #[test]
+    fn the_last_allowed_round_asks_for_a_report_and_runs_nothing() {
+        let mut h = vec![Msg::system("sys")];
+        let limits = Limits {
+            max_rounds: 2,
+            ..Limits::default()
+        };
+        let mut t = Turn::begin(&mut h, "go", 60_000).bounded(limits);
+        reply(
+            &mut t,
+            vec![call(0, Some("a"), Some("ls"), "{}")],
+            StreamEnd::Complete,
+        );
+        answer(&mut t, "x");
+        // round 2 is the last: the model is told, and its calls are dropped
+        reply(
+            &mut t,
+            vec![
+                text("did ls; tests remain"),
+                call(0, Some("b"), Some("bash"), "{}"),
+            ],
+            StreamEnd::Complete,
+        );
+        let Next::Finished(r) = t.poll() else {
+            panic!("not finished")
+        };
+        assert_eq!(
+            r.outcome,
+            Outcome::Failed("stopped at the 2-round limit".into())
+        );
+        assert_eq!(r.rounds, 2);
+        assert_eq!(h[4].content.as_deref(), Some(WRAP_UP));
+        assert_eq!(h[5].content.as_deref(), Some("did ls; tests remain"));
+        assert!(
+            h[5].tool_calls.is_none(),
+            "a call that never runs is never recorded"
+        );
+        assert_eq!(h.len(), 6);
+
+        // a one-round limit has no earlier round to report on: no note, and
+        // a plain answer within it is simply done
+        let limits = Limits {
+            max_rounds: 1,
+            ..Limits::default()
+        };
+        let mut h = Vec::new();
+        let mut t = Turn::begin(&mut h, "go", 60_000).bounded(limits);
+        reply(&mut t, vec![text("hi")], StreamEnd::Complete);
+        assert!(matches!(t.poll(), Next::Finished(r) if r.outcome.ok()));
+        assert_eq!(h.len(), 2);
+        let mut h = Vec::new();
+        let mut t = Turn::begin(&mut h, "go", 60_000).bounded(limits);
+        reply(
+            &mut t,
+            vec![call(0, None, Some("ls"), "{}")],
+            StreamEnd::Complete,
+        );
+        assert!(matches!(t.poll(), Next::Finished(r) if !r.outcome.ok()));
+        assert_eq!(h.len(), 1, "nothing ran, nothing was said");
+    }
+
+    #[test]
+    fn the_spend_cap_stops_before_the_next_request() {
+        let mut h = Vec::new();
+        let limits = Limits {
+            max_cost: 0.5,
+            ..Limits::default()
+        };
+        let mut t = Turn::begin(&mut h, "go", 60_000).bounded(limits);
+        reply(
+            &mut t,
+            vec![call(0, Some("a"), Some("ls"), "{}"), usage(10, 1, 0.75)],
+            StreamEnd::Complete,
+        );
+        answer(&mut t, "x");
+        let Next::Finished(r) = t.poll() else {
+            panic!("a second request was allowed")
+        };
+        assert_eq!(
+            r.outcome,
+            Outcome::Failed("spend cap $0.50 reached after 1 rounds".into())
+        );
+        assert!(drain(&mut t).last().unwrap().starts_with("finished:Failed"));
+    }
+
+    #[test]
+    fn a_call_stuck_on_the_same_result_is_told_so() {
+        let mut h = Vec::new();
+        let mut t = Turn::begin(&mut h, "go", 60_000);
+        for _ in 0..3 {
+            reply(
+                &mut t,
+                vec![call(0, None, Some("bash"), "{\"cmd\":\"make\"}")],
+                StreamEnd::Complete,
+            );
+            answer(&mut t, "error 1");
+        }
+        // a different result resets nothing, but is not a repeat itself
+        reply(
+            &mut t,
+            vec![call(0, None, Some("bash"), "{\"cmd\":\"make\"}")],
+            StreamEnd::Complete,
+        );
+        answer(&mut t, "ok");
+        let outs: Vec<&str> = h
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .map(|m| m.content.as_deref().unwrap())
+            .collect();
+        assert_eq!(outs[..2], ["error 1", "error 1"]);
+        assert!(outs[2].starts_with("error 1\n[deeptui: same call, same result, 3× this turn"));
+        assert_eq!(outs[3], "ok");
     }
 
     #[test]

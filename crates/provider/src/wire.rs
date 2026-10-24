@@ -40,7 +40,12 @@ pub fn decode(data: &str) -> Vec<Delta> {
                 out.push(Delta::Text(c.to_string()));
             }
         }
-        // reasoning deltas are skipped on purpose: cost transparency, quiet screen
+        // kept for the turn, never shown: a quiet screen
+        if let Some(r) = d["reasoning_content"].as_str() {
+            if !r.is_empty() {
+                out.push(Delta::Reasoning(r.to_string()));
+            }
+        }
         for tc in d["tool_calls"].as_array().into_iter().flatten() {
             out.push(Delta::Call {
                 idx: tc["index"].as_u64().unwrap_or(0) as usize,
@@ -76,6 +81,20 @@ mod tests {
     fn parses_text_delta() {
         let evs = decode(r#"{"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}"#);
         assert_eq!(evs, [Delta::Text("hi".into())]);
+    }
+
+    #[test]
+    fn parses_reasoning_apart_from_text() {
+        let evs = decode(
+            r#"{"choices":[{"delta":{"reasoning_content":"hmm","content":null},"finish_reason":null}]}"#,
+        );
+        assert_eq!(evs, [Delta::Reasoning("hmm".into())]);
+        // providers that send a null or empty field every chunk add nothing
+        assert!(decode(
+            r#"{"choices":[{"delta":{"reasoning_content":null,"content":""},"finish_reason":null}]}"#
+        )
+        .is_empty());
+        assert!(decode(r#"{"choices":[{"delta":{"reasoning_content":""}}]}"#).is_empty());
     }
 
     #[test]

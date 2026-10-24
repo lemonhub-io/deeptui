@@ -12,7 +12,11 @@ deeptui-repomap.workspace = true
 serde_json.workspace = true
 ignore.workspace = true
 regex.workspace = true
-tokio = { workspace = true, features = ["rt", "process", "time"] }
+tokio = { workspace = true, features = ["rt", "process", "time", "io-util", "macros"] }
+
+# bash runs in its own process group; the whole group is killed with it
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 deeptui-testkit.workspace = true

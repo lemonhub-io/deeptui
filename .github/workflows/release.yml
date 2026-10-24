@@ -72,7 +72,7 @@ jobs:
           else
             cp "$BIN" "$ART/deeptui"
           fi
-          cp README.md LICENSE "$ART/"
+          cp README.md MIGRATION.md RELEASE_NOTES.md LICENSE "$ART/"
           if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
             7z a -tzip "artifacts/$ART.zip" "$ART" >/dev/null
           else
@@ -90,47 +90,14 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
       - name: checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
-      - name: write release notes
-        run: |
-          cat > notes.md <<EOF
-          ## DeepTUI ${{ github.ref_name }}
-
-          Lean Rust coding agent — extreme cost & speed optimization.
-
-          - 8/8 tasks in the horizontal eval at ~\$0.0011 per successful task (see REPORT.md)
-          - ~5.6 MB binary, ~5 ms startup, ~4 MB RSS
-          - OpenAI-compatible: DeepSeek, OpenAI, OpenRouter, Ollama, vLLM, LM Studio
-          - ratatui TUI + scriptable headless mode
-
-          ### Install
-
-          \`\`\`sh
-          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/install.sh | bash
-          \`\`\`
-
-          Binaries: linux x86_64 (gnu + static musl), linux-aarch64, macOS
-          x86_64/aarch64, Windows x86_64. The installer picks the right one for
-          your platform and verifies it against \`SHA256SUMS.txt\`.
-          Verify manually with: \`sha256sum -c SHA256SUMS.txt\`
-
-          ### Required migration from ragent
-
-          All previous releases are retired. Existing users must reinstall using
-          the command above; the old updater interprets the version reset as a
-          downgrade and cannot perform this migration. The installer preserves
-          configuration and usage history and replaces a retired ragent binary
-          in the install directory with a launcher for DeepTUI.
-
-          Previously downloaded binaries have no remote enforcement mechanism;
-          users or their device administrators must run the installer.
-          EOF
       - name: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create ${{ github.ref_name }} -R ${{ github.repository }} --title "DeepTUI ${{ github.ref_name }}" --prerelease=${{ contains(github.ref_name, '-') }} --notes-file notes.md dist/*
+        run: gh release create ${{ github.ref_name }} -R ${{ github.repository }} --title "DeepTUI ${{ github.ref_name }}" --prerelease=${{ contains(github.ref_name, '-') }} --notes-file RELEASE_NOTES.md dist/*

@@ -7,11 +7,11 @@ mod prompt;
 mod session;
 
 pub use prompt::system_prompt;
-pub use session::{Command, Remote, Session};
+pub use session::{Command, Remote, Reply, Session, Shelf, Shelved, Switch, Switchboard};
 
 use deeptui_core::schedule::waves;
 use deeptui_core::{
-    Delta, Event, Msg, Next, Projection, Receipt, StreamEnd, Tariff, ToolCall, Turn,
+    Delta, Event, Limits, Msg, Next, Projection, Receipt, StreamEnd, Tariff, ToolCall, Turn,
 };
 use deeptui_provider::Provider;
 use deeptui_tools::Toolbox;
@@ -44,12 +44,16 @@ impl Outlet {
 
     async fn flush(&mut self, turn: &mut Turn<'_>) {
         for ev in turn.events() {
-            for t in &mut self.taps {
-                t.apply(&ev);
-            }
-            // a frontend that left only stops watching; the turn goes on
-            let _ = self.tx.send(ev).await;
+            self.emit(ev).await;
         }
+    }
+
+    async fn emit(&mut self, ev: Event) {
+        for t in &mut self.taps {
+            t.apply(&ev);
+        }
+        // a frontend that left only stops watching; the turn goes on
+        let _ = self.tx.send(ev).await;
     }
 }
 
@@ -58,6 +62,7 @@ pub struct Engine {
     toolbox: Toolbox,
     tariff: Tariff,
     budget: usize,
+    limits: Limits,
     schemas: Vec<Value>,
 }
 
@@ -75,7 +80,26 @@ impl Engine {
             toolbox,
             tariff,
             budget: context_budget,
+            limits: Limits::default(),
         }
+    }
+
+    /// The token estimate above which history is compacted.
+    pub fn budget(&self) -> usize {
+        self.budget
+    }
+
+    /// Send later turns to another model, priced and budgeted for it.
+    pub fn switch(&mut self, provider: Provider, tariff: Tariff, context_budget: usize) {
+        self.provider = provider;
+        self.tariff = tariff;
+        self.budget = context_budget;
+    }
+
+    /// Bound every turn by `limits` (rounds, spend).
+    pub fn limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// Run one turn on `history` to its end. Cancelling stops the stream or
@@ -87,7 +111,7 @@ impl Engine {
         cancel: &CancellationToken,
         out: &mut Outlet,
     ) -> Receipt {
-        let mut turn = Turn::begin(history, prompt, self.budget);
+        let mut turn = Turn::begin(history, prompt, self.budget).bounded(self.limits);
         loop {
             let next = turn.poll();
             out.flush(&mut turn).await;
@@ -254,6 +278,15 @@ mod tests {
                 Outcome::Interrupted => "interrupted".into(),
                 Outcome::Failed(e) => format!("failed:{e}"),
             },
+            Event::Notice(n) => format!("notice:{n}"),
+            Event::Reset(h) => format!("reset:{}", h.len()),
+            Event::Model { name, budget, .. } => format!("model:{name}:{budget}"),
+            Event::Ask(deeptui_core::Ask::Choose { title, options, .. }) => {
+                format!("choose:{title}:{}", options.len())
+            }
+            Event::Ask(deeptui_core::Ask::Secret { title, command }) => {
+                format!("secret:{title}:{command}")
+            }
         }
     }
 
@@ -320,6 +353,51 @@ mod tests {
 
     async fn turn(stub: &Stub, root: &Path, prompt: &str) -> (Vec<String>, Vec<Msg>) {
         turn_with(stub, root, prompt, CancellationToken::new()).await
+    }
+
+    #[tokio::test]
+    async fn thinking_goes_back_between_tool_calls_but_not_into_the_next_turn() {
+        let t = TmpDir::new("agent-thinking");
+        let stub = Stub::new();
+        let think = |r: &str| {
+            serde_json::json!({"choices":[{"delta":{"reasoning_content":r},"finish_reason":null}]})
+                .to_string()
+        };
+        stub.enqueue(
+            200,
+            sse(&[
+                &think("list first"),
+                &tool_round("call_1", "ls", "{}"),
+                "[DONE]",
+            ]),
+        );
+        stub.enqueue(
+            200,
+            sse(&[&think("got it"), &text_round("all done", "stop"), "[DONE]"]),
+        );
+        stub.enqueue(200, sse(&[&text_round("again", "stop"), "[DONE]"]));
+
+        let e = engine(&stub, t.path());
+        let (tx, rx) = mpsc::channel(256);
+        let mut out = Outlet::new(tx);
+        let mut h = vec![Msg::system("sys")];
+        let cancel = CancellationToken::new();
+        e.turn(&mut h, "do it".into(), &cancel, &mut out).await;
+        e.turn(&mut h, "more".into(), &cancel, &mut out).await;
+        drop(out);
+        let evs = drain(rx).await;
+        assert!(!evs.iter().any(|e| e.contains("list first")), "{evs:?}");
+
+        let reqs = stub.requests();
+        assert!(!reqs[0].contains("reasoning_content"));
+        assert!(
+            reqs[1].contains(r#""reasoning_content":"list first""#),
+            "{}",
+            reqs[1]
+        );
+        // a new turn: the earlier thinking is history's business no more
+        assert!(reqs[2].contains("\"more\"") && !reqs[2].contains("reasoning_content"));
+        assert!(h.iter().all(|m| m.reasoning_content.is_none()));
     }
 
     #[tokio::test]
@@ -415,14 +493,16 @@ mod tests {
 
         let (evs, msgs) = turn(&stub, t.path(), "go").await;
         assert!(
-            evs.contains(&"end:nope:err:error: unknown tool: nope".to_string()),
+            evs.iter()
+                .any(|e| e.starts_with("end:nope:err:error: unknown tool: nope")),
             "{evs:?}"
         );
         assert_eq!(evs.last().unwrap(), "done");
-        assert_eq!(
-            msgs[3].content.as_deref(),
-            Some("error: unknown tool: nope")
-        );
+        assert!(msgs[3]
+            .content
+            .as_deref()
+            .unwrap()
+            .starts_with("error: unknown tool: nope (have: read_file"));
         assert!(stub.requests()[1].contains("unknown tool: nope"));
     }
 
@@ -547,6 +627,41 @@ mod tests {
         );
         // the partial answer is kept so the next turn has context
         assert_eq!(msgs[2].content.as_deref(), Some("truncated"));
+    }
+
+    #[tokio::test]
+    async fn a_round_limit_ends_with_a_report_not_a_cut() {
+        let t = TmpDir::new("agent-limit");
+        let stub = Stub::new();
+        stub.enqueue(200, sse(&[&tool_round("c1", "ls", "{}"), "[DONE]"]));
+        stub.enqueue(
+            200,
+            sse(&[&text_round("listed; nothing else done", "stop"), "[DONE]"]),
+        );
+        let (tx, rx) = mpsc::channel(64);
+        let mut out = Outlet::new(tx);
+        let mut msgs = vec![Msg::system("sys")];
+        let limits = Limits {
+            max_rounds: 2,
+            max_cost: 0.0,
+        };
+        let r = engine(&stub, t.path())
+            .limits(limits)
+            .turn(&mut msgs, "go".into(), &CancellationToken::new(), &mut out)
+            .await;
+        drop(out);
+        assert_eq!(
+            drain(rx).await.last().unwrap(),
+            "failed:stopped at the 2-round limit"
+        );
+        assert_eq!(r.rounds, 2);
+        // the last request carried the wrap-up note
+        let reqs = stub.requests();
+        assert!(reqs[1].contains("round limit reached"), "{}", reqs[1]);
+        assert_eq!(
+            msgs.last().unwrap().content.as_deref(),
+            Some("listed; nothing else done")
+        );
     }
 
     #[tokio::test]

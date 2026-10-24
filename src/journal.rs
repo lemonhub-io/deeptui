@@ -59,8 +59,11 @@ impl Journal {
 
 impl Projection for Journal {
     fn apply(&mut self, ev: &Event) {
-        if let Event::Finished(r) = ev {
-            self.record(r);
+        match ev {
+            Event::Finished(r) => self.record(r),
+            // later turns are billed to the model they ran on
+            Event::Model { name, .. } => self.model = name.clone(),
+            _ => {}
         }
     }
 }
